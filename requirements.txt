@@ -1,0 +1,6 @@
+aiomqtt==2.4.0
+bluez_peripheral==0.2.0a4
+dbus-fast==2.44.3
+evdev==1.9.2
+paho-mqtt==2.1.0
+PyYAML==6.0.2

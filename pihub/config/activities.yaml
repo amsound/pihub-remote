@@ -1,0 +1,383 @@
+# activities.yaml
+activities:
+
+  power_off:
+    map:
+      rem_power_off:
+        - do: ha_service
+          when: down
+          domain: input_select
+          service: select_option
+          data:
+            entity_id: "${entities.input_select_activity}"
+            option: power_off
+
+      rem_activity_1:
+        - do: ha_service
+          when: down
+          domain: input_select
+          service: select_option
+          data:
+            entity_id: "${entities.input_select_activity}"
+            option: listen
+
+      rem_activity_2:
+        - do: ha_service
+          when: down
+          domain: input_select
+          service: select_option
+          data:
+            entity_id: "${entities.input_select_activity}"
+            option: watch
+
+      rem_activity_3:
+        - do: ha_service
+          when: down
+          domain: input_select
+          service: select_option
+          data:
+            entity_id: "${entities.input_select_activity}"
+            option: watch
+
+  watch:
+    map:
+      # Activity selectors
+      rem_power_off:
+        - do: ha_service
+          when: down
+          domain: input_select
+          service: select_option
+          data:
+            entity_id: "${entities.input_select_activity}"
+            option: power_off
+
+      rem_activity_1:
+        - do: ha_service
+          when: down
+          domain: input_select
+          service: select_option
+          data:
+            entity_id: "${entities.input_select_activity}"
+            option: listen
+
+      rem_activity_2:
+        - do: ha_service
+          when: down
+          domain: input_select
+          service: select_option
+          data:
+            entity_id: "${entities.input_select_activity}"
+            option: watch
+
+      rem_activity_3:
+        - do: ha_service
+          when: down
+          domain: input_select
+          service: select_option
+          data:
+            entity_id: "${entities.input_select_activity}"
+            option: watch
+
+      # Volume via HA (repeat on hold)
+      rem_vol_up:
+        - do: ha_service
+          domain: media_player
+          service: volume_up
+          data:
+            entity_id: "${entities.speakers}"
+          when: down
+          repeat:
+            initial_ms: 500
+            every_ms:   500
+      
+      rem_vol_down:
+        - do: ha_service
+          domain: media_player
+          service: volume_down
+          data:
+            entity_id: "${entities.speakers}"
+          when: down
+          repeat:
+            initial_ms: 500
+            every_ms:   500
+
+      rem_mute:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          data:
+            entity_id: ${entities.mute_script}
+
+      rem_dir_left:   [ { do: hid_consumer, name: menu_left } ]
+      rem_dir_right:  [ { do: hid_consumer, name: menu_right } ]
+      rem_dir_up:     [ { do: hid_consumer, name: menu_up } ]
+      rem_dir_down:   [ { do: hid_consumer, name: menu_down } ]
+      rem_ok:         [ { do: hid_consumer, name: menu_pick } ]
+      rem_exit:       [ { do: hid_consumer, name: menu } ]
+      rem_menu:       [ { do: hid_consumer, name: ac_home } ]
+      rem_back:       [ { do: hid_consumer, name: menu } ]
+      rem_rewind:     [ { do: hid_consumer, name: rewind } ]
+      rem_play:       [ { do: hid_consumer, name: play_pause } ]
+      rem_pause:      [ { do: hid_consumer, name: play_pause } ]
+      rem_fast_fwd:   [ { do: hid_consumer, name: fast_fwd } ]
+      rem_stop:       [ { do: hid_consumer, name: stop } ]
+      rem_record:     [ { do: hid_consumer, name: record } ]
+      rem_ch_up:      [ { do: hid_keyboard, name: page_up } ]
+      rem_ch_down:    [ { do: hid_keyboard, name: page_down } ]
+      
+      rem_dvr:    [ { do: hid_keyboard, name: f3 } ]
+      rem_guide:    [ { do: hid_consumer, name: guide } ]
+      rem_red:    [ { do: hid_consumer, name: red } ]
+      rem_green:    [ { do: hid_consumer, name: green } ]
+      rem_yellow:    [ { do: hid_consumer, name: yellow } ]
+      rem_blue:    [ { do: hid_consumer, name: blue } ]
+
+      rem_0: [ { do: hid_keyboard, name: n_0 } ]
+      rem_1: [ { do: hid_keyboard, name: n_1 } ]
+      rem_2: [ { do: hid_keyboard, name: n_2 } ]
+      rem_3: [ { do: hid_keyboard, name: n_3 } ]
+      rem_4: [ { do: hid_keyboard, name: n_4 } ]
+      rem_5: [ { do: hid_keyboard, name: n_5 } ]
+      rem_6: [ { do: hid_keyboard, name: n_6 } ]
+      rem_7: [ { do: hid_keyboard, name: n_7 } ]
+      rem_8: [ { do: hid_keyboard, name: n_8 } ]
+      rem_9: [ { do: hid_keyboard, name: n_9 } ]
+      rem_hyphen: [ { do: hid_consumer, name: subtitles } ]
+      rem_enter:  [ { do: hid_keyboard, name: i } ]
+
+  listen:
+    map:
+      rem_power_off:
+        - do: ha_service
+          when: down
+          domain: input_select
+          service: select_option
+          data:
+            entity_id: "${entities.input_select_activity}"
+            option: power_off
+
+      rem_activity_1:
+        - do: ha_service
+          when: down
+          domain: input_select
+          service: select_option
+          data:
+            entity_id: "${entities.input_select_activity}"
+            option: listen
+
+      rem_activity_2:
+        - do: ha_service
+          when: down
+          domain: input_select
+          service: select_option
+          data:
+            entity_id: "${entities.input_select_activity}"
+            option: watch
+
+      rem_activity_3:
+        - do: ha_service
+          when: down
+          domain: input_select
+          service: select_option
+          data:
+            entity_id: "${entities.input_select_activity}"
+            option: watch
+
+      # Listen mode volume via HA
+      rem_vol_up:
+        - do: ha_service
+          domain: media_player
+          service: volume_up
+          data:
+            entity_id: "${entities.speakers}"
+          when: down
+          repeat:
+            initial_ms: 500   # delay before repeating
+            every_ms:   500   # repeat interval while held
+      
+      rem_vol_down:
+        - do: ha_service
+          domain: media_player
+          service: volume_down
+          data:
+            entity_id: "${entities.speakers}"
+          when: down
+          repeat:
+            initial_ms: 500
+            every_ms:   500
+
+      rem_mute:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          data:
+            entity_id: ${entities.mute_script}
+            
+      rem_red:    { do: noop }
+      rem_green:  { do: noop }
+
+      rem_rewind:
+        - do: ha_service
+          domain: media_player
+          service: media_previous_track
+          data:
+            entity_id: "${entities.speakers}"
+
+      rem_play:
+        - do: ha_service
+          domain: media_player
+          service: media_play_pause
+          data:
+            entity_id: "${entities.speakers}"
+
+      rem_fast_fwd:
+        - do: ha_service
+          domain: media_player
+          service: media_next_track
+          data:
+            entity_id: "${entities.speakers}"
+
+      rem_pause:
+        - do: ha_service
+          domain: media_player
+          service: media_play_pause
+          data:
+            entity_id: "${entities.speakers}"
+
+      rem_stop:
+        - do: ha_service
+          domain: media_player
+          service: media_stop
+          data:
+            entity_id: "${entities.speakers}"
+
+      rem_dir_left:
+        - do: ha_service
+          domain: media_player
+          service: media_previous_track
+          data:
+            entity_id: "${entities.speakers}"
+
+      rem_dir_right:
+        - do: ha_service
+          domain: media_player
+          service: media_next_track
+          data:
+            entity_id: "${entities.speakers}"
+
+      rem_ch_up:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          when: down
+          data:
+            entity_id: "${radio_script}"
+            variables:
+              tune_action: next
+
+      rem_ch_down:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          when: down
+          data:
+            entity_id: "${radio_script}"
+            variables:
+              tune_action: prev
+
+      rem_ok:
+        - do: ha_service
+          domain: media_player
+          service: media_play_pause
+          data:
+            entity_id: "${entities.speakers}"
+
+      rem_0:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          data:
+            entity_id: "${radio_script}"
+            variables:
+              station: "Magic Radio"
+
+      rem_1:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          data:
+            entity_id: "${radio_script}"
+            variables:
+              station: "BBC Radio 1"
+
+      rem_2:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          data:
+            entity_id: "${radio_script}"
+            variables:
+              station: "Classic FM"
+
+      rem_3:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          data:
+            entity_id: "${radio_script}"
+            variables:
+              station: "Absolute Radio"
+
+      rem_4:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          data:
+            entity_id: "${radio_script}"
+            variables:
+              station: "BBC Radio 4"
+
+      rem_5:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          data:
+            entity_id: "${radio_script}"
+            variables:
+              station: "Capital London"
+
+      rem_6:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          data:
+            entity_id: "${radio_script}"
+            variables:
+              station: "BBC Radio 6 Music"
+
+      rem_7:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          data:
+            entity_id: "${radio_script}"
+            variables:
+              station: "FIP"
+
+      rem_8:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          data:
+            entity_id: "${radio_script}"
+            variables:
+              station: "KCRW Eclectic 24"
+
+      rem_9:
+        - do: ha_service
+          domain: script
+          service: turn_on
+          data:
+            entity_id: "${radio_script}"
+            variables:
+              station: "Virgin Radio"

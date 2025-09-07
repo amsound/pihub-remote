@@ -1,0 +1,49 @@
+# Button mapping for Harmony Remote
+
+device:
+  by_id: "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-kbd"
+  grab: true
+
+mapping:
+  786924: rem_power_off
+  786920: rem_activity_1
+  786925: rem_activity_2
+  786921: rem_activity_3
+  786612: rem_rewind
+  786608: rem_play
+  786611: rem_fast_fwd
+  786610: rem_record
+  786609: rem_pause
+  786615: rem_stop
+  786935: rem_red
+  786934: rem_green
+  786933: rem_yellow
+  786932: rem_blue
+  786586: rem_dvr
+  786573: rem_guide
+  786943: rem_info
+  786580: rem_exit
+  458853: rem_menu
+  786665: rem_vol_up
+  786666: rem_vol_down
+  786658: rem_mute
+  458834: rem_dir_up
+  458833: rem_dir_down
+  458832: rem_dir_left
+  458831: rem_dir_right
+  458840: rem_ok
+  786588: rem_ch_up
+  786589: rem_ch_down
+  786980: rem_back
+  458782: rem_1
+  458783: rem_2
+  458784: rem_3
+  458785: rem_4
+  458786: rem_5
+  458787: rem_6
+  458788: rem_7
+  458789: rem_8
+  458790: rem_9
+  458791: rem_0
+  458838: rem_hyphen
+  458792: rem_enter

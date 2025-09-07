@@ -1,0 +1,16 @@
+room: "living_room"
+device_name: "PiHub-LivingRoom"
+
+mqtt:
+  host: "192.168.70.24"
+  port: 1883
+  prefix_bridge: "pihub/living_room"
+  username: "remote"
+  password: "remote"
+  input_select_entity: "living_room_activity"
+  
+entities:
+  input_select_activity: "input_select.living_room_activity"
+  speakers: "media_player.living_room_speakers_unified"
+  radio_script: "script.living_room_universal_radio_tuner"
+  mute_script: "script.living_room_toggle_mute"
