@@ -2,14 +2,17 @@
 import asyncio
 import signal
 import sys
+import json
 from pathlib import Path
+import hashlib
+import contextlib
 
 from pihub.bt_le.hid_device import start_hid
 from pihub.bt_le.hid_client import HIDClient
 
 from pihub.core.keymaps import load_keymaps, watch_keymaps
 from pihub.core.remote_evdev import load_remote_config, read_events_scancode
-from pihub.core.dispatcher import Dispatcher, load_activities, watch_activities
+from pihub.core.dispatcher import Dispatcher, load_activities, watch_activities, Activities
 from pihub.core.config import load_room_config
 from pihub.ha_mqtt.mqtt_bridge import MqttBridge, MqttConfig
 from pihub.macros import atv
@@ -24,36 +27,15 @@ HID_KEYMAP_PATH    = CONFIG_DIR / "hid_keymap.yaml"
 REMOTE_KEYMAP_PATH = CONFIG_DIR / "remote_keymap.yaml"
 ACTIVITIES_PATH    = CONFIG_DIR / "activities.yaml"
 
-_WATCH_ACTS_TASK = None  # guard: ensure we start the activities watcher only once
-
 async def main():
-    # --- room config ---
+    # ── 1) Room config ──────────────────────────────────────────────────────────
     room_cfg = load_room_config(CONFIG_DIR / "room.yaml")
-    
-    # --- expansion context for activities.yaml ---
-    ctx = {
-        "room": room_cfg.room,
-        "mqtt": {
-            "prefix_bridge": room_cfg.prefix_bridge,
-        },
-        # optional: passthrough of any entity ids you put in room.yaml
-        "entities": getattr(room_cfg, "entities", {}) or {},
-    }
 
-    # --- bring up BLE HID ---
-    class MiniConfig:
-        device_name = room_cfg.device_name
-        appearance  = 0x03C1
-
-    runtime, shutdown = await start_hid(MiniConfig(), enable_console=False)
-    hid = HIDClient(runtime.hid)
-
-    # --- load HID keymaps (initial) ---
+    # ── 2) Load HID keymaps (initial) ──────────────────────────────────────────
     km = load_keymaps(str(HID_KEYMAP_PATH))
     print(f"[Keymaps] Loaded: {len(km.keyboard)} kb, {len(km.consumer)} cc")
 
     # Debounce state for keymaps
-    import hashlib, json, asyncio
     def _km_digest(km_obj) -> str:
         payload = {
             "kb": sorted(km_obj.keyboard.items()),
@@ -75,13 +57,12 @@ async def main():
         print(f"[Keymaps] Reloaded: {len(km.keyboard)} Keyboard, {len(km.consumer)} Consumer")
 
     def on_km_reload(new):
-        # collapse bursts into one apply
         nonlocal km_debounce_task
         if km_debounce_task and not km_debounce_task.done():
             return
         async def _debounced():
             async with km_lock:
-                await asyncio.sleep(0.10)  # 100 ms debounce window
+                await asyncio.sleep(0.10)
                 await _km_apply(new)
         km_debounce_task = asyncio.create_task(_debounced(), name="km_reload")
 
@@ -90,92 +71,25 @@ async def main():
         name="watch_keymaps"
     )
 
-    # --- command handler (HA -> PiHub sequences) ---
-    async def on_cmd(name: str, payload: bytes):
-        # Expect exactly these topics:
-        # pihub/<room>/cmd/atv/on
-        # pihub/<room>/cmd/atv/off
-        if name == "atv/on":
-            # optional: allow JSON payload {"ikd_ms": 400}
-            ikd = 400
-            try:
-                import json
-                obj = json.loads(payload.decode() or "{}")
-                ikd = int(obj.get("ikd_ms", ikd))
-            except Exception:
-                pass
-            asyncio.create_task(atv.atv_on(hid, ikd_ms=ikd))
-            print("[macros] queued atv/on")
-            return
-    
-        if name == "atv/off":
-            ikd = 400
-            try:
-                import json
-                obj = json.loads(payload.decode() or "{}")
-                ikd = int(obj.get("ikd_ms", ikd))
-            except Exception:
-                pass
-            asyncio.create_task(atv.atv_off(hid, ikd_ms=ikd))
-            print("[macros] queued atv/off")
-            return
-    
-        # Unknown command: just log
-        print(f"[macros] unknown cmd: {name}")
+    # ── 3) Dispatcher (seed with Noop HID; we’ll attach real HID later) ─────────
+    class NoopHID:
+        def key_down(self, *_args, **_kw): pass
+        def key_up(self): pass
+        def consumer_down(self, *_args, **_kw): pass
+        def consumer_up(self): pass
 
-    # --- dispatcher with 'null' activity until HA state arrives ---
-    from pihub.core.dispatcher import Activities
     dispatcher = Dispatcher(
-        hid_client=hid,
+        hid_client=NoopHID(),
         keymaps=km,
         activities=Activities(default="null", activities={}),
     )
     dispatcher.set_activity("null")
     print("[State] Activity set to null (waiting to receive state from HA)")
 
-    # --- substitutions for ${…} in activities.yaml (built from room.yaml) ---
-    subs = {
-        "room": room_cfg.room,
-        "prefix_bridge": room_cfg.prefix_bridge,
-    }
-    # flatten entities.* into subs
-    if hasattr(room_cfg, "entities") and isinstance(room_cfg.entities, dict):
-        for k, v in room_cfg.entities.items():
-            subs[f"entities.{k}"] = v
-    # optional legacy key if you still reference ${radio_script}
-    if getattr(room_cfg, "radio_script", None):
-        subs["radio_script"] = room_cfg.radio_script
-    
-    # --- activities (seed silently, then watch) ---
-    acts = load_activities(str(ACTIVITIES_PATH), subs=subs)
+    # ── 4) Activities (seed + debounced hot reload) ────────────────────────────
+    acts = load_activities(str(ACTIVITIES_PATH))
     dispatcher.activities = acts
-    acts_last = tuple(sorted(acts.activities.keys()))
-    
-    def on_acts_reload(new_acts):
-        nonlocal acts_last
-        dispatcher.activities = new_acts
-        digest = tuple(sorted(new_acts.activities.keys()))
-        if digest != acts_last:
-            print(f"[Dispatch] Activities updated: {list(digest)}")
-            acts_last = digest
-    
-    acts_task = asyncio.create_task(
-        watch_activities(str(ACTIVITIES_PATH), on_reload=on_acts_reload, subs=subs),
-        name="watch_activities",
-    )
-    
-    # --- hot-reload watcher (pass subs) ---
-    def on_acts_reload(new_acts):
-        dispatcher.activities = new_acts
-        print(f"[Dispatch] Activities updated: {sorted(new_acts.activities.keys())}")
-    
-    acts_task = asyncio.create_task(
-        watch_activities(str(ACTIVITIES_PATH), on_reload=on_acts_reload, subs=subs),
-        name="watch_activities",
-    )
 
-    # Debounce + skip the very first watcher fire
-    import hashlib, json, asyncio
     def _acts_digest(acts_obj: Activities) -> str:
         payload = {
             "default": acts_obj.default,
@@ -186,7 +100,7 @@ async def main():
     acts_last = _acts_digest(acts)
     acts_debounce_task: asyncio.Task | None = None
     acts_lock = asyncio.Lock()
-    _skip_first_acts_reload = True  # <— NEW: skip the first watcher event
+    _skip_first_acts_reload = True
 
     async def _acts_apply(new_acts):
         nonlocal acts_last
@@ -201,7 +115,6 @@ async def main():
 
     def on_acts_reload(new_acts):
         nonlocal acts_debounce_task, _skip_first_acts_reload
-        # Skip the first watcher callback after startup
         if _skip_first_acts_reload:
             _skip_first_acts_reload = False
             return
@@ -214,18 +127,43 @@ async def main():
         acts_debounce_task = asyncio.create_task(_debounced(), name="acts_reload")
 
     acts_task = asyncio.create_task(
-        watch_activities(str(ACTIVITIES_PATH), on_reload=on_acts_reload, subs=subs),
+        watch_activities(str(ACTIVITIES_PATH), on_reload=on_acts_reload),
         name="watch_activities"
     )
 
-    # --- MQTT bridge (HA is the single publisher of activity state) ---
-    
-    def _obj_id(eid: str) -> str:
-        # "input_select.living_room_activity" -> "living_room_activity"
-        return eid.split(".", 1)[1] if isinstance(eid, str) and "." in eid else eid
-    
-    activity_obj_id = _obj_id(room_cfg.entities.get("input_select_activity", "living_room_activity"))
-    
+    # ── 5) Command handler (uses dispatcher.hid so it works before/after BLE) ──
+    async def on_cmd(name: str, payload: bytes):
+        # Expect topics under: pihub/<room>/cmd/...
+        # e.g. atv/on  or  atv/off  (optional: {"ikd_ms": 400})
+        if name == "atv/on":
+            ikd = 400
+            try:
+                obj = json.loads((payload or b"").decode() or "{}")
+                ikd = int(obj.get("ikd_ms", ikd))
+            except Exception:
+                pass
+            asyncio.create_task(atv.atv_on(dispatcher.hid, ikd_ms=ikd))
+            print("[macros] queued atv/on")
+            return
+
+        if name == "atv/off":
+            ikd = 400
+            try:
+                obj = json.loads((payload or b"").decode() or "{}")
+                ikd = int(obj.get("ikd_ms", ikd))
+            except Exception:
+                pass
+            asyncio.create_task(atv.atv_off(dispatcher.hid, ikd_ms=ikd))
+            print("[macros] queued atv/off")
+            return
+
+        print(f"[macros] unknown cmd: {name}")
+
+    # ── 6) MQTT bridge (early, so HA state arrives fast) ───────────────────────
+    if not room_cfg.room:
+        raise RuntimeError("room: <name> is required in room.yaml (e.g. room: living_room)")
+    activity_obj_id = f"{room_cfg.room}_activity"
+
     mqtt = MqttBridge(
         MqttConfig(
             host=room_cfg.mqtt_host,
@@ -233,51 +171,79 @@ async def main():
             user=room_cfg.mqtt_user,
             password=room_cfg.mqtt_password,
             prefix_bridge=room_cfg.prefix_bridge,
-            input_select_entity=activity_obj_id,   # IMPORTANT: object_id only
-            substitutions={
-                "entities.speakers": room_cfg.entities.get("speakers", ""),
-                "radio_script": room_cfg.entities.get("radio_script", room_cfg.entities.get("speakers", "")),
-            },
+            input_select_entity=activity_obj_id,
         ),
         on_activity_state=lambda a: dispatcher.set_activity(a),
-        on_command=lambda name, payload: on_cmd(name, payload),
+        on_command=lambda name, payload: asyncio.create_task(on_cmd(name, payload)),
     )
-    
-    # (optional debug so you can see exactly what topic we’re on)
     print(f"[mqtt] will subscribe → {room_cfg.prefix_bridge.rstrip('/')}/input_select/{activity_obj_id}/state")
-    
     dispatcher.mqtt = mqtt
-    dispatcher.on_activity_change = None  # Pi never echoes state to HA
-
-    # Start MQTT (creates internal rx/tx tasks; returns immediately)
+    dispatcher.on_activity_change = None
     asyncio.create_task(mqtt.start(lambda: dispatcher.activity), name="mqtt")
-    
-    # --- remote (scancode-only) ---
+
+    # ── 7) Bring up BLE HID (optional), then attach to dispatcher ─────────────
+    #     (do it *after* MQTT so /cmd macros are available immediately)
+    shutdown = None  # set below for cleanup
+    if room_cfg.bt_enabled:
+        class MiniConfig:
+            device_name = room_cfg.bt_device_name or room_cfg.device_name
+            appearance  = 0x03C1  # keyboard
+
+        runtime, shutdown = await start_hid(MiniConfig(), enable_console=False)
+        hid = HIDClient(runtime.hid)
+        dispatcher.hid = hid  # <- attach real HID now
+        print(f"[BT] enabled (advertising as {MiniConfig.device_name})")
+    else:
+        async def shutdown():
+            pass
+        print("[BT] disabled via config; running without BLE HID")
+
+    # ── 8) Remote reader (evdev) ──────────────────────────────────────────────
     rcfg = load_remote_config(str(REMOTE_KEYMAP_PATH))
-    
-    # --- remote (scancode-only) ---
-    rcfg = load_remote_config(str(REMOTE_KEYMAP_PATH))
-    
+
     async def on_button(name, edge):
         print(f"[remote] {name} {'press' if edge=='down' else 'release'}")
         await dispatcher.handle(name, edge)
-    
+
     stop_ev = asyncio.Event()
     remote_task = asyncio.create_task(
         read_events_scancode(
             rcfg,
             on_button,
             stop_event=stop_ev,
-            # DEBUG knobs for this test run:
-            msc_only=True,          # keep strict MSC first (your preference)
-            debug_unmapped=False,    # show if we’re seeing IDs that aren’t mapped
-            debug_trace=False,       # dump MSC_SCAN + key edges
+            msc_only=True,
+            debug_unmapped=False,
+            debug_trace=False,
         ),
         name="read_events",
     )
     print("[App] Remote Reader started")
 
-    # --- signals / lifecycle ---
+    # ── 9) Apple TV (optional; last) ──────────────────────────────────────────
+    atv_service = None
+
+    def _publish_atv_state(state: dict):
+        print(f"[pyatv→mqtt] {state}")
+        topic = f"{room_cfg.prefix_bridge}/pyatv/state"
+        asyncio.create_task(mqtt.publish_json(topic, state))
+
+    if room_cfg.pyatv_enabled:
+        try:
+            from pihub.pyatv.atv_service import AppleTvService, PyAtvCreds
+            atv_service = AppleTvService(
+                PyAtvCreds(
+                    address   = room_cfg.pyatv_address,
+                    companion = room_cfg.pyatv_companion,
+                    airplay   = room_cfg.pyatv_airplay,
+                ),
+                on_state=_publish_atv_state,
+            )
+            asyncio.create_task(atv_service.start(), name="pyatv")
+            dispatcher.atv = atv_service
+        except ModuleNotFoundError as e:
+            print(f"[pyatv] disabled or missing dependency: {e}")
+
+    # ── 10) Signals / lifecycle ───────────────────────────────────────────────
     loop = asyncio.get_running_loop()
     stop = loop.create_future()
 
@@ -292,14 +258,15 @@ async def main():
     try:
         await stop
     finally:
-        # orderly teardown
+        # orderly teardown (MQTT first, then BLE)
         stop_ev.set()
-        import contextlib
         for t in (remote_task, km_task, acts_task, km_debounce_task, acts_debounce_task):
             if t:
                 t.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await t
+        if atv_service:
+            await atv_service.stop()
         await mqtt.shutdown()
         await shutdown()
         print("[PiHub] Clean shutdown.")

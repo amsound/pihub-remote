@@ -14,25 +14,9 @@ class Activities:
     default: str
     activities: Dict[str, Any]
 
-def _substitute(obj, subs: Optional[Dict[str, Any]]):
-    if not subs:
-        return obj
-    # simple ${key} replacer for strings; recurse lists/dicts
-    if isinstance(obj, str):
-        s = obj
-        for k, v in subs.items():
-            s = s.replace("${" + k + "}", str(v))
-        return s
-    if isinstance(obj, list):
-        return [_substitute(x, subs) for x in obj]
-    if isinstance(obj, dict):
-        return {k: _substitute(v, subs) for k, v in obj.items()}
-    return obj
-
-def load_activities(path: str, *, subs: Optional[Dict[str, Any]] = None) -> Activities:
+def load_activities(path: str) -> Activities:
     with open(path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
-    data = _substitute(raw, subs)
+        data = yaml.safe_load(f) or {}
     default = (data.get("defaults") or {}).get("activity", "watch")
     return Activities(default=default, activities=data.get("activities") or {})
 
@@ -40,15 +24,13 @@ async def watch_activities(
     path: str,
     on_reload: Callable[[Activities], None],
     poll: float = 0.5,
-    *,
-    subs: dict | None = None,
 ):
-    """Hot-reload activities.yaml with ${...} substitutions (quiet, no dup logs)."""
+    """Hot-reload activities.yaml (quiet, no dup logs)."""
     last = None
 
     # Initial load (once)
     try:
-        acts = load_activities(path, subs=subs)
+        acts = load_activities(path)
         on_reload(acts)
         try:
             last = os.path.getmtime(path)
@@ -63,7 +45,7 @@ async def watch_activities(
             m = os.path.getmtime(path)
             if m != last:
                 last = m
-                acts = load_activities(path, subs=subs)
+                acts = load_activities(path)
                 on_reload(acts)
                 print(f"[Activities] reloaded ({len(acts.activities)} sections)")
         except FileNotFoundError:
@@ -82,9 +64,15 @@ class Dispatcher:
         self.activity = activities.default
         self.mqtt = mqtt
         self.on_activity_change = on_activity_change
+
+        # input handling state
         self._repeat_tasks: dict[str, asyncio.Task] = {}
         self._held_keys: set[str] = set()
         self._hold_tasks: dict[str, asyncio.Task] = {}
+
+        # optional integrations
+        self.atv = None            # set in app.py
+
 
     def set_keymaps(self, keymaps):
         self.keymaps = keymaps
@@ -248,14 +236,53 @@ class Dispatcher:
                 await self.mqtt.publish_activity_command(target)
                 # Do NOT set self.activity here; wait for HA state echo on '.../activity'
             return
+            
+        # 4) Apple TV via pyATV (semantic gestures)
+        if kind == "atv":
+            svc = getattr(self, "atv", None)
+            if not svc:
+                print("[atv] not enabled (dispatcher.atv missing)")
+                return
 
-        # 4) Sleep utility
+            # Defaults
+            cmd      = (a.get("cmd") or "tap").lower()          # tap | hold | double
+            key      = (a.get("key") or a.get("name") or "").lower()
+            when     = (a.get("when") or "up").lower()
+            delay_ms = int(a.get("delay_ms") or 0)
+            hold_ms  = int(a.get("hold_ms") or 0)
+
+            if not key:
+                print("[atv] missing 'key' in action")
+                return
+
+            # Otherwise: direct call, respecting 'when'
+            if when != edge:
+                return
+
+            try:
+                if cmd == "tap":
+                    await svc.tap(key)
+                elif cmd == "hold":
+                    await svc.hold(key, ms=(hold_ms or None))
+                elif cmd in ("double", "doubletap"):
+                    await svc.double(key)
+                else:
+                    print(f"[atv] unknown cmd '{cmd}'")
+                    return
+
+                if delay_ms > 0:
+                    await asyncio.sleep(delay_ms / 1000.0)
+            except Exception as e:
+                print(f"[atv] error: {e}")
+            return
+
+        # 5) Sleep utility
         if kind == "sleep_ms":
             if edge == "down":
                 await asyncio.sleep(a.get("ms", 0) / 1000)
             return
 
-        # 5) Placeholder
+        # 6) Placeholder
         if kind == "noop":
             return
 

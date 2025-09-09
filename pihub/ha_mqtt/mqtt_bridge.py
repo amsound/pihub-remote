@@ -21,7 +21,6 @@ class MqttConfig:
     prefix_bridge: str
     input_select_entity: str
     status_interval_sec: int = 120
-    substitutions: dict[str, str] | None = None
 
 
 class MqttBridge:
@@ -36,25 +35,6 @@ class MqttBridge:
 
     def __init__(self, cfg: MqttConfig, on_activity_state, on_command=None):
         self.cfg = cfg
-        
-        # flatten substitutions: {"entities.speakers": "media_player.living_room", ...}
-        def _flatten(d, prefix=""):
-            flat = {}
-            if not isinstance(d, dict):
-                return flat
-            for k, v in d.items():
-                key = f"{prefix}.{k}" if prefix else k
-                if isinstance(v, dict):
-                    flat.update(_flatten(v, key))
-                else:
-                    flat[key] = v
-            return flat
-        
-        self._subs = {}
-        if cfg.substitutions:
-            # allow both flat {"a.b": "..."} and nested {"a": {"b": "..."}}
-            self._subs.update(_flatten(cfg.substitutions))
-            self._subs.update({k: v for k, v in cfg.substitutions.items() if isinstance(v, str)})
         
         self.on_activity_state = on_activity_state
         self.on_command = on_command  # optional callback (name:str, payload:bytes)
@@ -149,44 +129,56 @@ class MqttBridge:
                         backoff = min(backoff * 2, 30.0)
                         continue
         finally:
-            # Signal completely unwound
+            # We are completely out of `async with Client` here.
+            # Disarm paho so its __del__ can't poke a closed loop later.
+            self._disarm_paho()
             self._stopped.set()
-            # Belt-and-braces: publish OFFLINE once more with a fresh client
+            # Best-effort post-teardown OFFLINE (fresh short-lived client)
             await self._publish_offline_once()
 
+    def _disarm_paho(self):
+        """Detach paho's socket callbacks so __del__/GC won't poke a closed loop."""
+        try:
+            # aiomqtt.Client -> underlying paho.mqtt.client.Client is in ._client
+            pc = getattr(self.client, "_client", None)
+            if pc is None:
+                return
+            for cb in (
+                "on_socket_open",
+                "on_socket_close",
+                "on_socket_register_write",
+                "on_socket_unregister_write",
+            ):
+                try:
+                    setattr(pc, cb, None)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    
     async def shutdown(self):
-        """Signal loops to stop and let start() unwind."""
+        """Signal loops to stop and let start() unwind everything cleanly."""
         self._stop.set()
-        # Optionally wait until fully unwound (used by app.py on clean exit)
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(self._stopped.wait(), timeout=3.0)
 
     async def publish_ha_service(self, domain: str, service: str, data: dict | None = None):
         """
         Enqueue a Home Assistant service call to {base}/ha/service/call.
-        Expands ${...} placeholders in the data before publishing.
         """
-        resolved = self._resolve_placeholders(data or {})
         payload = json.dumps(
-            {"domain": domain, "service": service, "data": resolved},
+            {"domain": domain, "service": service, "data": data or {}},
             separators=(",", ":"),
         )
         await self._out_q.put((self.topic_service_call, payload))
         
-        
-    def _resolve_placeholders(self, obj):
-        """Replace strings like '${path.to.value}' using self._subs."""
-        def subst(val):
-            if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
-                key = val[2:-1]
-                return self._subs.get(key, val)  # leave as-is if not found
-            return val
-    
-        if isinstance(obj, dict):
-            return {k: self._resolve_placeholders(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [self._resolve_placeholders(x) for x in obj]
-        return subst(obj)
+    async def publish_json(self, topic: str, obj: dict):
+        """
+        Publish a JSON object via the existing TX queue (non-retained).
+        Usage: await mqtt.publish_json("pihub/<room>/pyatv/state", state_dict)
+        """
+        payload = json.dumps(obj, separators=(",", ":"))
+        await self._out_q.put((topic, payload))
 
     # ---------- Internal: message pump / dispatch ----------
 
@@ -396,15 +388,28 @@ class MqttBridge:
         }
 
     async def _publish_offline_once(self):
-        """Best-effort 'offline' publish after teardown, using a short-lived client."""
+        """Best-effort 'offline' publish after teardown, without aiomqtt (no loop)."""
         try:
-            async with Client(
-                hostname=self.cfg.host,
-                port=self.cfg.port,
-                username=self.cfg.user,
-                password=self.cfg.password,
-                keepalive=5,
-            ) as c2:
-                await c2.publish(self.topic_health, b"offline", qos=1, retain=True)
+            import paho.mqtt.client as paho
+
+            def _do():
+                cli = paho.Client(protocol=paho.MQTTv311)
+                if self.cfg.user:
+                    cli.username_pw_set(self.cfg.user, self.cfg.password or "")
+                try:
+                    cli.connect(self.cfg.host, self.cfg.port, keepalive=5)
+                except Exception:
+                    return
+                try:
+                    cli.loop_start()
+                    cli.publish(self.topic_health, b"offline", qos=1, retain=True)
+                    # small wait so it actually sends before we tear down
+                    cli.loop_stop()  # stop will join the network thread
+                finally:
+                    with contextlib.suppress(Exception):
+                        cli.disconnect()
+
+            # run blocking publish in a thread so we don't touch the event loop
+            await asyncio.get_running_loop().run_in_executor(None, _do)
         except Exception:
             pass

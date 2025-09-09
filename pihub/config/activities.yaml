@@ -9,7 +9,7 @@ activities:
           domain: input_select
           service: select_option
           data:
-            entity_id: "${entities.input_select_activity}"
+            entity_id: activity_select
             option: power_off
 
       rem_activity_1:
@@ -18,7 +18,7 @@ activities:
           domain: input_select
           service: select_option
           data:
-            entity_id: "${entities.input_select_activity}"
+            entity_id: activity_select
             option: listen
 
       rem_activity_2:
@@ -27,7 +27,7 @@ activities:
           domain: input_select
           service: select_option
           data:
-            entity_id: "${entities.input_select_activity}"
+            entity_id: activity_select
             option: watch
 
       rem_activity_3:
@@ -36,7 +36,7 @@ activities:
           domain: input_select
           service: select_option
           data:
-            entity_id: "${entities.input_select_activity}"
+            entity_id: activity_select
             option: watch
 
   watch:
@@ -48,7 +48,7 @@ activities:
           domain: input_select
           service: select_option
           data:
-            entity_id: "${entities.input_select_activity}"
+            entity_id: activity_select
             option: power_off
 
       rem_activity_1:
@@ -57,7 +57,7 @@ activities:
           domain: input_select
           service: select_option
           data:
-            entity_id: "${entities.input_select_activity}"
+            entity_id: activity_select
             option: listen
 
       rem_activity_2:
@@ -66,7 +66,7 @@ activities:
           domain: input_select
           service: select_option
           data:
-            entity_id: "${entities.input_select_activity}"
+            entity_id: activity_select
             option: watch
 
       rem_activity_3:
@@ -75,7 +75,7 @@ activities:
           domain: input_select
           service: select_option
           data:
-            entity_id: "${entities.input_select_activity}"
+            entity_id: activity_select
             option: watch
 
       # Volume via HA (repeat on hold)
@@ -84,7 +84,7 @@ activities:
           domain: media_player
           service: volume_up
           data:
-            entity_id: "${entities.speakers}"
+            entity_id: speakers
           when: down
           repeat:
             initial_ms: 500
@@ -95,7 +95,7 @@ activities:
           domain: media_player
           service: volume_down
           data:
-            entity_id: "${entities.speakers}"
+            entity_id: speakers
           when: down
           repeat:
             initial_ms: 500
@@ -106,7 +106,7 @@ activities:
           domain: script
           service: turn_on
           data:
-            entity_id: ${entities.mute_script}
+            entity_id: mute_script
 
       rem_dir_left:   [ { do: hid_consumer, name: menu_left } ]
       rem_dir_right:  [ { do: hid_consumer, name: menu_right } ]
@@ -116,6 +116,16 @@ activities:
       rem_exit:       [ { do: hid_consumer, name: menu } ]
       rem_menu:       [ { do: hid_consumer, name: ac_home } ]
       rem_back:       [ { do: hid_consumer, name: menu } ]
+
+#      rem_dir_left:   [ { do: atv, key: left,   cmd: tap } ]
+#      rem_dir_right:  [ { do: atv, key: right,  cmd: tap } ]
+#      rem_dir_up:     [ { do: atv, key: up,     cmd: tap } ]
+#      rem_dir_down:   [ { do: atv, key: down,   cmd: tap } ]
+#      rem_ok:         [ { do: atv, key: select, cmd: tap } ]
+#      rem_exit:       [ { do: atv, key: menu,   cmd: tap } ]
+#      rem_menu:       [ { do: atv, key: home,   cmd: tap } ]
+#      rem_back:       [ { do: atv, key: menu,   cmd: tap } ]
+
       rem_rewind:     [ { do: hid_consumer, name: rewind } ]
       rem_play:       [ { do: hid_consumer, name: play_pause } ]
       rem_pause:      [ { do: hid_consumer, name: play_pause } ]
@@ -153,7 +163,7 @@ activities:
           domain: input_select
           service: select_option
           data:
-            entity_id: "${entities.input_select_activity}"
+            entity_id: activity_select
             option: power_off
 
       rem_activity_1:
@@ -162,7 +172,7 @@ activities:
           domain: input_select
           service: select_option
           data:
-            entity_id: "${entities.input_select_activity}"
+            entity_id: activity_select
             option: listen
 
       rem_activity_2:
@@ -171,7 +181,7 @@ activities:
           domain: input_select
           service: select_option
           data:
-            entity_id: "${entities.input_select_activity}"
+            entity_id: activity_select
             option: watch
 
       rem_activity_3:
@@ -180,7 +190,7 @@ activities:
           domain: input_select
           service: select_option
           data:
-            entity_id: "${entities.input_select_activity}"
+            entity_id: activity_select
             option: watch
 
       # Listen mode volume via HA
@@ -189,7 +199,7 @@ activities:
           domain: media_player
           service: volume_up
           data:
-            entity_id: "${entities.speakers}"
+            entity_id: speakers
           when: down
           repeat:
             initial_ms: 500   # delay before repeating
@@ -200,7 +210,7 @@ activities:
           domain: media_player
           service: volume_down
           data:
-            entity_id: "${entities.speakers}"
+            entity_id: speakers
           when: down
           repeat:
             initial_ms: 500
@@ -211,7 +221,7 @@ activities:
           domain: script
           service: turn_on
           data:
-            entity_id: ${entities.mute_script}
+            entity_id: mute_script
             
       rem_red:    { do: noop }
       rem_green:  { do: noop }
@@ -221,49 +231,49 @@ activities:
           domain: media_player
           service: media_previous_track
           data:
-            entity_id: "${entities.speakers}"
+            entity_id: speakers
 
       rem_play:
         - do: ha_service
           domain: media_player
           service: media_play_pause
           data:
-            entity_id: "${entities.speakers}"
+            entity_id: speakers
 
       rem_fast_fwd:
         - do: ha_service
           domain: media_player
           service: media_next_track
           data:
-            entity_id: "${entities.speakers}"
+            entity_id: speakers
 
       rem_pause:
         - do: ha_service
           domain: media_player
           service: media_play_pause
           data:
-            entity_id: "${entities.speakers}"
+            entity_id: speakers
 
       rem_stop:
         - do: ha_service
           domain: media_player
           service: media_stop
           data:
-            entity_id: "${entities.speakers}"
+            entity_id: speakers
 
       rem_dir_left:
         - do: ha_service
           domain: media_player
           service: media_previous_track
           data:
-            entity_id: "${entities.speakers}"
+            entity_id: speakers
 
       rem_dir_right:
         - do: ha_service
           domain: media_player
           service: media_next_track
           data:
-            entity_id: "${entities.speakers}"
+            entity_id: speakers
 
       rem_ch_up:
         - do: ha_service
@@ -271,7 +281,7 @@ activities:
           service: turn_on
           when: down
           data:
-            entity_id: "${radio_script}"
+            entity_id: radio_script
             variables:
               tune_action: next
 
@@ -281,7 +291,7 @@ activities:
           service: turn_on
           when: down
           data:
-            entity_id: "${radio_script}"
+            entity_id: radio_script
             variables:
               tune_action: prev
 
@@ -290,14 +300,14 @@ activities:
           domain: media_player
           service: media_play_pause
           data:
-            entity_id: "${entities.speakers}"
+            entity_id: speakers
 
       rem_0:
         - do: ha_service
           domain: script
           service: turn_on
           data:
-            entity_id: "${radio_script}"
+            entity_id: radio_script
             variables:
               station: "Magic Radio"
 
@@ -306,7 +316,7 @@ activities:
           domain: script
           service: turn_on
           data:
-            entity_id: "${radio_script}"
+            entity_id: radio_script
             variables:
               station: "BBC Radio 1"
 
@@ -315,7 +325,7 @@ activities:
           domain: script
           service: turn_on
           data:
-            entity_id: "${radio_script}"
+            entity_id: radio_script
             variables:
               station: "Classic FM"
 
@@ -324,7 +334,7 @@ activities:
           domain: script
           service: turn_on
           data:
-            entity_id: "${radio_script}"
+            entity_id: radio_script
             variables:
               station: "Absolute Radio"
 
@@ -333,7 +343,7 @@ activities:
           domain: script
           service: turn_on
           data:
-            entity_id: "${radio_script}"
+            entity_id: radio_script
             variables:
               station: "BBC Radio 4"
 
@@ -342,7 +352,7 @@ activities:
           domain: script
           service: turn_on
           data:
-            entity_id: "${radio_script}"
+            entity_id: radio_script
             variables:
               station: "Capital London"
 
@@ -351,7 +361,7 @@ activities:
           domain: script
           service: turn_on
           data:
-            entity_id: "${radio_script}"
+            entity_id: radio_script
             variables:
               station: "BBC Radio 6 Music"
 
@@ -360,7 +370,7 @@ activities:
           domain: script
           service: turn_on
           data:
-            entity_id: "${radio_script}"
+            entity_id: radio_script
             variables:
               station: "FIP"
 
@@ -369,7 +379,7 @@ activities:
           domain: script
           service: turn_on
           data:
-            entity_id: "${radio_script}"
+            entity_id: radio_script
             variables:
               station: "KCRW Eclectic 24"
 
@@ -378,6 +388,6 @@ activities:
           domain: script
           service: turn_on
           data:
-            entity_id: "${radio_script}"
+            entity_id: radio_script
             variables:
               station: "Virgin Radio"

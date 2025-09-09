@@ -533,7 +533,7 @@ async def start_hid(config, *, enable_console: bool = False) -> tuple[HidRuntime
 
     link_task = asyncio.create_task(_watch_link(), name="hid_link_watch")
     
-    print(f"[PiHub] Advertising as {device_name} on {adapter_name}. Ready to pair.")
+    print(f"[BT] Advertising as {device_name} on {adapter_name}. Ready to pair.")
     
     # Start link watcher (flips _link_ready and prints concise pairing log)
     link_task = asyncio.create_task(watch_link(bus, advert, hid), name="hid_watch_link")

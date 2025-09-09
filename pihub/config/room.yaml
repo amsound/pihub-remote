@@ -1,5 +1,8 @@
 room: "living_room"
-device_name: "PiHub-LivingRoom"
+
+bt:
+  enabled: true
+  device_name: "PiHub-LivingRoom"
 
 mqtt:
   host: "192.168.70.24"
@@ -7,10 +10,10 @@ mqtt:
   prefix_bridge: "pihub/living_room"
   username: "remote"
   password: "remote"
-  input_select_entity: "living_room_activity"
-  
-entities:
-  input_select_activity: "input_select.living_room_activity"
-  speakers: "media_player.living_room_speakers_unified"
-  radio_script: "script.living_room_universal_radio_tuner"
-  mute_script: "script.living_room_toggle_mute"
+
+pyatv:
+  enabled: false
+  address:   "192.168.70.44"
+  identifier: "FA:1A:26:07:F0:A7"
+  companion: "0fe91af7df6e77026d6c941a090b041f574718013362cbcf187fda7f0bf1ebc2:91bdaf49c643f572fa5ffa3497134c797af3918e776d1c1da1b37146c2190dd0:46413141323630372d463041372d344236362d413844342d414243303345393231363134:36386635626535312d313761642d343064642d613430662d623730666431353832663162"                # paste Companion creds if you have them
+  airplay:   "0fe91af7df6e77026d6c941a090b041f574718013362cbcf187fda7f0bf1ebc2:a5436f5b46ba3fc011c56ec0e975b76c6137a07dffe71d96621c26091e360f6b:46413141323630372d463041372d344236362d413844342d414243303345393231363134:30633733643831362d313133372d346634622d383734392d626362333665306639613132"                  # paste AirPlay creds if you have them
