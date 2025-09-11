@@ -1,150 +1,188 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- Configurable constants ---
-SERVICE_NAME="pihub"
-APP_MODULE="pihub.app"             # python -m pihub.app
-PYTHON_BIN="python3"
-VENV_DIR=".venv"
-REQ_FILE="requirements.txt"
+REPO_DIR="/home/pi/pihub-remote"
+CONF_DIR="$REPO_DIR/config"
+ROOM_YAML="$CONF_DIR/room.yaml"
 
-# --- Paths ---
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-BT_OVERRIDE_DIR="/etc/systemd/system/bluetooth.service.d"
-BT_OVERRIDE="${BT_OVERRIDE_DIR}/override.conf"
-BT_MAIN="/etc/bluetooth/main.conf"
-BT_BACKUP="/etc/bluetooth/main.conf.pihub.bak"
+# Helpers
+to_title() {  # "living_room" -> "Living Room"
+  python3 - <<'PY'
+import sys
+s=sys.stdin.read().strip().replace('_',' ')
+print(s.title())
+PY
+}
+to_camel_suffix() {  # ensure one-word CamelCase
+  python3 - <<'PY'
+import sys,re
+s=sys.stdin.read().strip()
+# Accept already CamelCase; otherwise make TitleCase and strip spaces/underscores
+parts=re.split(r'[_\s]+', s)
+print(''.join(p[:1].upper()+p[1:] for p in parts if p))
+PY
+}
 
-# --- Helpers ---
-need_sudo() {
-  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-    echo "[installer] re-running with sudo…"
-    exec sudo -E bash "$0" "$@"
+prompt() {
+  local msg="$1" def="${2-}"
+  if [ -n "$def" ]; then
+    read -rp "$msg [$def]: " val || true
+    echo "${val:-$def}"
+  else
+    read -rp "$msg: " val || true
+    echo "$val"
   fi
 }
-line() { printf '%*s\n' "${COLUMNS:-80}" '' | tr ' ' -; }
 
-# --- Require root ---
-need_sudo "$@"
-
-line
-echo "[1/8] Python venv + requirements"
-cd "$REPO_DIR"
-if [[ ! -d "$VENV_DIR" ]]; then
-  $PYTHON_BIN -m venv "$VENV_DIR"
+echo "[install] Ensuring repo layout and venv…"
+cd /home/pi
+if [ -d "$REPO_DIR/.git" ]; then
+  cd "$REPO_DIR" && git pull --ff-only
+else
+  git clone https://github.com/amsound/pihub-remote.git
+  cd "$REPO_DIR"
 fi
-source "$VENV_DIR/bin/activate"
+
+python3 -m venv .venv
+source .venv/bin/activate
 pip install --upgrade pip
-pip install -r "$REQ_FILE"
+pip install -r requirements.txt
 
-line
-echo "[2/8] Add current user to 'input' group (evdev access)"
-RUNUSER="${SUDO_USER:-$(logname 2>/dev/null || echo pi)}"
-if id -nG "$RUNUSER" | grep -qw input; then
-  echo " - $RUNUSER already in input"
+mkdir -p "$CONF_DIR"
+
+# Load existing values if present
+if [ -f "$ROOM_YAML" ]; then
+  echo "[install] Found existing $ROOM_YAML, will update selected fields."
+  _room=$(grep -E '^room:' "$ROOM_YAML" | sed -E 's/room:\s*"?(.*?)"?\s*$/\1/')
+  _btname=$(grep -E '^\s*device_name:' -n "$ROOM_YAML" | sed -E 's/.*device_name:\s*"?(.*?)"?\s*$/\1/')
+  _host=$(grep -E '^\s*host:' "$ROOM_YAML" | sed -E 's/.*host:\s*"?(.*?)"?\s*$/\1/')
+  _port=$(grep -E '^\s*port:' "$ROOM_YAML" | sed -E 's/.*port:\s*([0-9]+)\s*$/\1/')
+  _user=$(grep -E '^\s*username:' "$ROOM_YAML" | sed -E 's/.*username:\s*"?(.*?)"?\s*$/\1/')
+  _pass=$(grep -E '^\s*password:' "$ROOM_YAML" | sed -E 's/.*password:\s*"?(.*?)"?\s*$/\1/')
 else
-  usermod -aG input "$RUNUSER" || true
-  echo " - Added $RUNUSER to input (reboot may be required)"
+  _room=""
+  _btname=""
+  _host=""
+  _port=""
+  _user=""
+  _pass=""
 fi
 
-line
-echo "[3/8] bluetoothd --experimental (systemd drop-in)"
-mkdir -p "$BT_OVERRIDE_DIR"
-cat > "$BT_OVERRIDE" <<'EOF'
-[Service]
-ExecStart=
-ExecStart=/usr/libexec/bluetooth/bluetoothd --experimental
+# ---- Prompts ----
+room=$(prompt "Room (snake_case, e.g. living_room)" "${_room:-}")
+while [ -z "$room" ]; do room=$(prompt "Room (snake_case, e.g. living_room)"); done
+
+room_title=$(printf "%s" "$room" | to_title)
+suffix_in=$(prompt "Bluetooth device suffix (CamelCase, e.g. LivingRoom)" "$(printf "%s" "$room_title" | tr -d ' ')")
+bt_suffix=$(printf "%s" "$suffix_in" | to_camel_suffix)
+bt_name="PiHub-$bt_suffix"
+
+mqtt_host=$(prompt "MQTT host" "${_host:-192.168.70.24}")
+mqtt_port=$(prompt "MQTT port" "${_port:-1883}")
+mqtt_user=$(prompt "MQTT username" "${_user:-remote}")
+mqtt_pass=$(prompt "MQTT password" "${_pass:-remote}")
+
+prefix_bridge="pihub/$room"
+device_name="$room_title - PiHub"
+hostname="PiHub-$bt_suffix"
+
+echo
+echo "[install] Summary:"
+echo "  room:           $room"
+echo "  device_name:    $device_name"
+echo "  bt.device_name: $bt_name"
+echo "  mqtt.host:      $mqtt_host"
+echo "  mqtt.port:      $mqtt_port"
+echo "  mqtt.username:  $mqtt_user"
+echo "  mqtt.password:  (hidden)"
+echo "  prefix_bridge:  $prefix_bridge"
+echo "  hostname:       $hostname"
+echo
+
+# ---- Write or update room.yaml (respect layout) ----
+if [ -f "$ROOM_YAML" ]; then
+  echo "[install] Updating existing room.yaml fields…"
+  tmp="$ROOM_YAML.tmp.$$"
+  awk -v room="$room" \
+      -v btname="$bt_name" \
+      -v host="$mqtt_host" \
+      -v port="$mqtt_port" \
+      -v user="$mqtt_user" \
+      -v pass="$mqtt_pass" \
+      -v pfx="$prefix_bridge" '
+    BEGIN{ in_bt=0; in_mqtt=0 }
+    {
+      if ($0 ~ /^room:/) {
+        print "room: \"" room "\""
+        next
+      }
+      if ($0 ~ /^bt:/) { in_bt=1; in_mqtt=0; print; next }
+      if ($0 ~ /^mqtt:/) { in_mqtt=1; in_bt=0; print; next }
+      if (in_bt && $0 ~ /^\s*device_name:/) { print "  device_name: \"" btname "\""; next }
+      if (in_mqtt && $0 ~ /^\s*host:/) { print "  host: \"" host "\""; next }
+      if (in_mqtt && $0 ~ /^\s*port:/) { print "  port: " port; next }
+      if (in_mqtt && $0 ~ /^\s*prefix_bridge:/) { print "  prefix_bridge: \"" pfx "\""; next }
+      if (in_mqtt && $0 ~ /^\s*username:/) { print "  username: \"" user "\""; next }
+      if (in_mqtt && $0 ~ /^\s*password:/) { print "  password: \"" pass "\""; next }
+      print
+    }' "$ROOM_YAML" >"$tmp"
+  mv "$tmp" "$ROOM_YAML"
+else
+  echo "[install] Creating new room.yaml…"
+  cat >"$ROOM_YAML" <<EOF
+room: "$room"
+
+bt:
+  enabled: true
+  device_name: "$bt_name"
+
+mqtt:
+  host: "$mqtt_host"
+  port: $mqtt_port
+  prefix_bridge: "$prefix_bridge"
+  username: "$mqtt_user"
+  password: "$mqtt_pass"
 EOF
-systemctl daemon-reload
-
-line
-echo "[4/8] BlueZ main.conf block (controller + LE timings)"
-if [[ -f "$BT_MAIN" && ! -f "$BT_BACKUP" ]]; then
-  cp -a "$BT_MAIN" "$BT_BACKUP"
 fi
 
-TAG_START="# --- PiHub managed begin ---"
-TAG_END="# --- PiHub managed end ---"
-BLOCK=$(cat <<'EOB'
-# --- PiHub managed begin ---
-ControllerMode = le
-FastConnectable = true
-Privacy = off
-JustWorksRepairing = always
+echo "[install] room.yaml written at $ROOM_YAML"
+echo
 
-[LE]
-MinConnectionInterval = 12
-MaxConnectionInterval = 24
-ConnectionLatency = 0
-ConnectionSupervisionTimeout = 200
-# --- PiHub managed end ---
-EOB
-)
-
-if grep -qF "$TAG_START" "$BT_MAIN" 2>/dev/null; then
-  awk -v start="$TAG_START" -v end="$TAG_END" -v repl="$BLOCK" '
-    BEGIN{printed=0}
-    { if($0==start){inblock=1; if(!printed){print repl; printed=1} next}
-      if($0==end){inblock=0; next}
-      if(!inblock) print $0
-    }' "$BT_MAIN" > "${BT_MAIN}.tmp"
-  mv "${BT_MAIN}.tmp" "$BT_MAIN"
-else
-  printf '\n%s\n' "$BLOCK" >> "$BT_MAIN"
-fi
-
-line
-echo "[5/8] Optional: set hostname to match room (device_name)"
-read -r -p "Set a new hostname now (leave blank to skip): " NEW_HOST
-if [[ -n "${NEW_HOST// /}" ]]; then
-  hostnamectl set-hostname "$NEW_HOST"
-  if grep -qE "127\\.0\\.1\\.1" /etc/hosts; then
-    sed -i "s/^127\\.0\\.1\\.1.*/127.0.1.1\\t${NEW_HOST}/" /etc/hosts || true
-  else
-    echo -e "127.0.1.1\\t${NEW_HOST}" >> /etc/hosts
-  fi
-  echo " - Hostname set to $NEW_HOST (reboot recommended)"
-fi
-
-line
-echo "[6/8] Create systemd service: ${SERVICE_NAME}.service"
-cat > "$SERVICE_FILE" <<EOF
+# ---- Systemd service ----
+echo "[install] Installing systemd service pihub-remote…"
+sudo tee /etc/systemd/system/pihub-remote.service >/dev/null <<'EOF'
 [Unit]
-Description=PiHub Remote (BLE HID + MQTT)
-After=bluetooth.service network-online.target
+Description=PiHub Remote Bridge
+After=network-online.target bluetooth.service
 Wants=network-online.target
 
 [Service]
-Type=simple
-User=${RUNUSER}
-WorkingDirectory=${REPO_DIR}
+User=pi
+WorkingDirectory=/home/pi/pihub-remote
 Environment=PYTHONUNBUFFERED=1
-ExecStart=${REPO_DIR}/${VENV_DIR}/bin/python -m ${APP_MODULE}
+ExecStart=/home/pi/pihub-remote/.venv/bin/python -m pihub.app
 Restart=on-failure
 RestartSec=2
-Environment=VIRTUAL_ENV=${REPO_DIR}/${VENV_DIR}
-Environment=PATH=${REPO_DIR}/${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
+sudo systemctl daemon-reload
+sudo systemctl enable --now pihub-remote
 
-line
-echo "[7/8] Restart bluetooth to apply config"
-systemctl restart bluetooth || true
-
-line
-echo "[8/8] Enable + start service"
-systemctl enable "$SERVICE_NAME"
-systemctl restart "$SERVICE_NAME"
-
-line
-echo "Done."
-echo "- Logs:    journalctl -u ${SERVICE_NAME} -f -o cat"
-echo "- Health:  MQTT topic '<prefix>/health' (online/offline)"
-echo "- Status:  MQTT topic '<prefix>/status/json'"
-echo
-echo "If hostname changed or you were added to 'input' group, reboot recommended."
+# ---- Offer to set hostname and reboot (default YES) ----
+read -rp "Set hostname to \"$hostname\" and reboot now? [Y/n]: " yn || true
+yn=${yn,,}
+if [ -z "$yn" ] || [ "$yn" = "y" ] || [ "$yn" = "yes" ]; then
+  echo "[install] Setting hostname to $hostname…"
+  sudo hostnamectl set-hostname "$hostname"
+  # ensure /etc/hosts has 127.1 mapping
+  if ! grep -qE "127\.0\.1\.1\s+$hostname" /etc/hosts; then
+    echo "127.0.1.1 $hostname" | sudo tee -a /etc/hosts >/dev/null
+  fi
+  echo "[install] Rebooting…"
+  sudo reboot
+else
+  echo "[install] Skipping reboot. Please reboot manually to apply firmware Wi-Fi disable if you ran system prep."
+fi

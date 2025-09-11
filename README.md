@@ -1,7 +1,7 @@
 # PiHub Remote
 
-A Raspberry Pi–based Bluetooth HID remote that integrates with Home Assistant via MQTT.  
-It bridges a USB IR/RF receiver (evdev) → BLE HID (keyboard + consumer control) and HA automations.
+A Raspberry Pi–based Universal remote that integrates with Home Assistant via MQTT and includes BLE control.  
+It bridges a Logitech Unifying USB receiver with a button-only Harmony remote control using evdev. Dynamic button mappings allow BLE keyboard/consumed + HA mixed on one device.
 
 ---
 
