@@ -229,14 +229,24 @@ class Dispatcher:
                     print(f"[Dispatch→HA] {logical_name} {edge} -> {domain}.{service} {data}")
                     await self.mqtt.publish_ha_service(domain, service, data)
             return
-        # 3) Activity switching (PiHub requests HA to change via command topic)
-        if kind == "set_activity":
-            if edge == "down" and self.mqtt:
-                target = a["to"]
-                await self.mqtt.publish_activity_command(target)
-                # Do NOT set self.activity here; wait for HA state echo on '.../activity'
-            return
             
+        # 3) Publish a simple activity intent (Pi → HA)
+        if kind == "activity_intent":
+            if not self.mqtt:
+                return
+            # default to send on button DOWN (feels snappier), change to 'up' if you prefer
+            when = (a.get("when") or "down").lower()
+            if when != edge:
+                return
+            target = (a.get("to") or a.get("name") or "").lower()
+            if target in ("watch", "listen", "power_off"):
+                await self.mqtt.publish_activity_intent(target)
+                print(f"[Dispatch→HA] intent → {target}")
+            else:
+                print(f"[Dispatch→HA] unknown activity intent: {target!r}")
+            return
+        
+        
         # 4) Apple TV via pyATV (semantic gestures)
         if kind == "atv":
             svc = getattr(self, "atv", None)

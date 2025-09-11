@@ -176,7 +176,8 @@ async def main():
         on_activity_state=lambda a: dispatcher.set_activity(a),
         on_command=lambda name, payload: asyncio.create_task(on_cmd(name, payload)),
     )
-    print(f"[mqtt] will subscribe → {room_cfg.prefix_bridge.rstrip('/')}/input_select/{activity_obj_id}/state")
+    #print(f"[mqtt] will subscribe → {room_cfg.prefix_bridge.rstrip('/')}/input_select/{activity_obj_id}/state")
+    print(f"[mqtt] will subscribe → {mqtt.topic_activity_state}")
     dispatcher.mqtt = mqtt
     dispatcher.on_activity_change = None
     asyncio.create_task(mqtt.start(lambda: dispatcher.activity), name="mqtt")

@@ -4,79 +4,43 @@ activities:
   power_off:
     map:
       rem_power_off:
-        - do: ha_service
-          when: down
-          domain: input_select
-          service: select_option
-          data:
-            entity_id: activity_select
-            option: power_off
+        do: noop
 
       rem_activity_1:
-        - do: ha_service
+        - do: activity_intent
           when: down
-          domain: input_select
-          service: select_option
-          data:
-            entity_id: activity_select
-            option: listen
+          to: listen
 
       rem_activity_2:
-        - do: ha_service
+        - do: activity_intent
           when: down
-          domain: input_select
-          service: select_option
-          data:
-            entity_id: activity_select
-            option: watch
+          to: watch
 
       rem_activity_3:
-        - do: ha_service
-          when: down
-          domain: input_select
-          service: select_option
-          data:
-            entity_id: activity_select
-            option: watch
+        do: noop
 
   watch:
     map:
       # Activity selectors
       rem_power_off:
-        - do: ha_service
+        - do: activity_intent
           when: down
-          domain: input_select
-          service: select_option
-          data:
-            entity_id: activity_select
-            option: power_off
+          to: power_off
 
       rem_activity_1:
-        - do: ha_service
+        - do: noop
+        - do: activity_intent
           when: down
-          domain: input_select
-          service: select_option
-          data:
-            entity_id: activity_select
-            option: listen
+          to: listen
+          min_hold_ms: 800
 
       rem_activity_2:
-        - do: ha_service
+        - do: activity_intent
           when: down
-          domain: input_select
-          service: select_option
-          data:
-            entity_id: activity_select
-            option: watch
+          to: watch
 
       rem_activity_3:
-        - do: ha_service
-          when: down
-          domain: input_select
-          service: select_option
-          data:
-            entity_id: activity_select
-            option: watch
+        do: noop
 
       # Volume via HA (repeat on hold)
       rem_vol_up:
@@ -158,40 +122,22 @@ activities:
   listen:
     map:
       rem_power_off:
-        - do: ha_service
+        - do: activity_intent
           when: down
-          domain: input_select
-          service: select_option
-          data:
-            entity_id: activity_select
-            option: power_off
+          to: power_off
 
       rem_activity_1:
-        - do: ha_service
+        - do: activity_intent
           when: down
-          domain: input_select
-          service: select_option
-          data:
-            entity_id: activity_select
-            option: listen
+          to: listen
 
       rem_activity_2:
-        - do: ha_service
+        - do: activity_intent
           when: down
-          domain: input_select
-          service: select_option
-          data:
-            entity_id: activity_select
-            option: watch
+          to: watch
 
       rem_activity_3:
-        - do: ha_service
-          when: down
-          domain: input_select
-          service: select_option
-          data:
-            entity_id: activity_select
-            option: watch
+        do: noop
 
       # Listen mode volume via HA
       rem_vol_up:
@@ -391,3 +337,95 @@ activities:
             entity_id: radio_script
             variables:
               station: "Virgin Radio"
+              
+              
+# ---------------------------------------------------------------------------
+# PiHub Activities – Notes & Examples
+# ---------------------------------------------------------------------------
+# Each button under `map:` can trigger one or more actions.
+# Actions are dictionaries with a `do:` key, plus optional fields.
+#
+# Supported `do:` kinds:
+#   - hid_consumer / hid_keyboard  → send raw HID keys to BLE host
+#   - ha_service                   → call a Home Assistant service via MQTT
+#   - activity_intent              → publish high-level intent (watch|listen|power_off)
+#   - atv                          → pyATV gestures (tap, hold, double)
+#   - sleep_ms                     → wait for N ms (useful for sequencing)
+#   - noop                         → placeholder; does nothing
+#
+# Common optional fields:
+#   - when: "down" | "up" | "both"   (default = "up")
+#   - min_hold_ms: N                 (fires only if held ≥ N ms; suppresses short press)
+#   - repeat:
+#       initial_ms: N                (delay before first repeat after the initial fire)
+#       every_ms: N                  (interval between repeats while held)
+#
+# ---------------------------------------------------------------------------
+# Examples
+# ---------------------------------------------------------------------------
+#
+# 1) Simple short press:
+# rem_ok:
+#   - do: activity_intent
+#     to: watch
+#
+# 2) Short + Long press on the same button (mutually exclusive):
+#    - quick tap = listen
+#    - hold ≥ 1000ms = power_off
+# rem_power_off:
+#   - do: activity_intent
+#     to: listen
+#     when: down
+#   - do: activity_intent
+#     to: power_off
+#     min_hold_ms: 1000
+#
+# 3) HA service call:
+# rem_volume_up_single:
+#   - do: ha_service
+#     domain: media_player
+#     service: volume_up
+#     data:
+#       entity_id: media_player.living_room_speakers
+#
+# 4) Repeating actions (press-and-hold):
+#    - fires once immediately on DOWN, then repeats while held
+# rem_volume_up:
+#   - do: ha_service
+#     when: down
+#     domain: media_player
+#     service: volume_up
+#     data:
+#       entity_id: media_player.living_room_speakers
+#     repeat:
+#       initial_ms: 350     # wait 350ms after first fire before repeating
+#       every_ms: 120       # then repeat every 120ms
+#
+# rem_volume_down:
+#   - do: ha_service
+#     when: down
+#     domain: media_player
+#     service: volume_down
+#     data:
+#       entity_id: media_player.living_room_speakers
+#     repeat:
+#       initial_ms: 350
+#       every_ms: 120
+#
+# 5) Placeholder (no-op):
+# rem_unused:
+#   - do: noop
+#
+# 6) D-pad with repeat (snappy navigation):
+# rem_dir_down:
+#   - do: ha_service
+#     when: down
+#     domain: input_button
+#     service: press
+#     data:
+#       entity_id: input_button.ui_down
+#     repeat:
+#       initial_ms: 250
+#       every_ms: 90
+#
+# ---------------------------------------------------------------------------

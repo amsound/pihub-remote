@@ -41,8 +41,22 @@ class MqttBridge:
 
         # Topics
         self.base = cfg.prefix_bridge.rstrip("/")
+        
+        # HA Statestream base ("pihub" from "pihub/<room>") NEW
+        self.ss_base = self.base.split("/", 1)[0]
+        
+        # Derive a stable room key from prefix: "pihub/living_room" -> "living_room"
+        self._room = (self.base.split("/", 1)[1] if "/" in self.base else self.base).replace("/", "_")
+        self._dev_id = f"pihub:{self._room}"           # device identifier
+        self._dev_name = f"{self._room.replace('_',' ').title()} - PiHub"
+        self._disc_prefix = "homeassistant"
+        
         self.topic_service_call   = f"{self.base}/ha/service/call"
-        self.topic_activity_state = f"{self.base}/input_select/{cfg.input_select_entity}/state"
+        # OLD self.topic_activity_state = f"{self.base}/input_select/{cfg.input_select_entity}/state"
+        
+        # Listen to HA statestream here (no room segment in the path)
+        self.topic_activity_state = f"{self.ss_base}/input_select/{cfg.input_select_entity}/state"
+        
         self.topic_health         = f"{self.base}/health"
         self.topic_cmd_base       = f"{self.base}/cmd"
         self.topic_status_json    = f"{self.base}/status/json"
@@ -79,6 +93,14 @@ class MqttBridge:
 
                         # Health ONLINE (retained)
                         await c.publish(self.topic_health, b"online", qos=1, retain=True)
+                        
+                        # Publish discovery configs (retained) so HA creates/updates the Device
+                        with contextlib.suppress(Exception):
+                            await self._publish_discovery(c)
+                        
+                        # Nuke any previously-retained activity intent so HA doesn't replay it
+                        with contextlib.suppress(Exception):
+                            await c.publish(self.topic_activity, b"", qos=1, retain=True)
 
                         # Push an initial status snapshot immediately
                         with contextlib.suppress(Exception):
@@ -95,8 +117,12 @@ class MqttBridge:
                         tx_task     = asyncio.create_task(self._tx_loop(c),      name="mqtt_tx")
                         status_task = asyncio.create_task(self._status_loop(c),  name="mqtt_status")
 
-                        # Wait for stop
-                        await self._stop.wait()
+                        # Wait for either: a) stop requested, or b) disconnect (pump ends)
+                        stop_wait = asyncio.create_task(self._stop.wait(), name="mqtt_stopwait")
+                        done, _ = await asyncio.wait(
+                            {stop_wait, pump_task},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
 
                         # Best-effort OFFLINE (bounded)
                         with contextlib.suppress(Exception):
@@ -106,9 +132,10 @@ class MqttBridge:
                             )
 
                         # Teardown loops
-                        for t in (pump_task, tx_task, status_task):
-                            t.cancel()
-                        for t in (pump_task, tx_task, status_task):
+                        for t in (pump_task, tx_task, status_task, stop_wait):
+                            if not t.done():
+                                t.cancel()
+                        for t in (pump_task, tx_task, status_task, stop_wait):
                             with contextlib.suppress(asyncio.CancelledError):
                                 await t
 
@@ -172,6 +199,13 @@ class MqttBridge:
         )
         await self._out_q.put((self.topic_service_call, payload))
         
+    async def publish_activity_intent(self, activity: str):
+        """Publish simple activity intents Pi→HA, e.g. watch|listen|power_off."""
+        topic = f"{self.base}/activity"   # e.g. pihub/living_room/activity
+        payload = (activity or "").strip().lower()
+        if payload:
+            await self._out_q.put((topic, payload))
+        
     async def publish_json(self, topic: str, obj: dict):
         """
         Publish a JSON object via the existing TX queue (non-retained).
@@ -230,6 +264,11 @@ class MqttBridge:
             try:
                 print(f"[MQTT] tx {topic} {payload}")
                 await c.publish(topic, payload, qos=1, retain=False)
+            except Exception:
+                # Requeue once and exit so start() can reconnect and respawn us
+                with contextlib.suppress(Exception):
+                    self._out_q.put_nowait((topic, payload))
+                return
             finally:
                 self._out_q.task_done()
 
@@ -240,12 +279,25 @@ class MqttBridge:
         await asyncio.sleep(1.0)
         interval = max(5, int(self.cfg.status_interval_sec or 120))
         while not self._stop.is_set():
+            # Reassert availability so HA that just restarted will see it
+            try:
+                await c.publish(self.topic_health, b"online", qos=1, retain=True)
+            except Exception as e:
+                print(f"[MQTT] health publish error: {e}")
+    
+            # Gather and publish status snapshot (non-retained)
             data = await asyncio.get_running_loop().run_in_executor(None, self._gather_status)
             try:
-                await c.publish(self.topic_status_json, json.dumps(data, separators=(",", ":")), qos=0, retain=False)
+                await c.publish(
+                    self.topic_status_json,
+                    json.dumps(data, separators=(",", ":")),
+                    qos=0,
+                    retain=False,
+                )
             except Exception as e:
                 print(f"[MQTT] status publish error: {e}")
-            # wait with cancellation support
+    
+            # Wait with cancellation support
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
@@ -256,8 +308,229 @@ class MqttBridge:
         data = await asyncio.get_running_loop().run_in_executor(None, self._gather_status)
         try:
             await c.publish(self.topic_status_json, json.dumps(data, separators=(",", ":")), qos=0, retain=False)
-        except Exception as e:
-            print(f"[MQTT] initial status publish error: {e}")
+        except Exception:
+            return  # quiet on initial connect hiccups
+            
+    # ---------- Autodiscover Device ----------
+            
+    async def _publish_discovery(self, c: Client):
+        """Publish Home Assistant MQTT Discovery configs (retained)."""
+        dev = {
+            "identifiers": [self._dev_id],
+            "manufacturer": "PiHub",
+            "model": "PiHub Remote Bridge",
+            "name": self._dev_name,
+            "suggested_area": self._room.replace("_"," ").title(),
+        }
+        avail = [{"topic": self.topic_health, "payload_available": "online", "payload_not_available": "offline"}]
+    
+        def j(d): import json; return json.dumps(d, separators=(",", ":"))
+    
+        # Online binary_sensor
+        bs_uid = f"pihub_{self._room}_online"
+        bs_cfg = {
+            "name": f"{self._dev_name} Online",
+            "uniq_id": bs_uid,
+            "dev_cla": "connectivity",
+            "stat_t": self.topic_health,
+            "pl_on": "online",
+            "pl_off": "offline",
+            "avty": avail,
+            "dev": dev,
+        }
+        await c.publish(f"{self._disc_prefix}/binary_sensor/{bs_uid}/config", j(bs_cfg), qos=1, retain=True)
+    
+        # CPU temp
+        s_uid = f"pihub_{self._room}_cpu_temp"
+        s_cfg = {
+            "name": f"{self._dev_name} CPU Temp",
+            "uniq_id": s_uid,
+            "stat_t": self.topic_status_json,
+            "unit_of_meas": "°C",
+            "val_tpl": "{{ value_json.cpu_temp_c }}",
+            "avty": avail,
+            "dev": dev,
+            "icon": "mdi:thermometer",
+            "entity_category": "diagnostic",
+        }
+        await c.publish(f"{self._disc_prefix}/sensor/{s_uid}/config", j(s_cfg), qos=1, retain=True)
+    
+        # CPU load
+        s2_uid = f"pihub_{self._room}_cpu_load"
+        s2_cfg = {
+            "name": f"{self._dev_name} CPU Load",
+            "uniq_id": s2_uid,
+            "stat_t": self.topic_status_json,
+            "unit_of_meas": "%",
+            "val_tpl": "{{ value_json.cpu_load_pct }}",
+            "avty": avail,
+            "dev": dev,
+            "icon": "mdi:chip",
+            "entity_category": "diagnostic",
+        }
+        await c.publish(f"{self._disc_prefix}/sensor/{s2_uid}/config", j(s2_cfg), qos=1, retain=True)
+    
+        # IP
+        s3_uid = f"pihub_{self._room}_ip"
+        s3_cfg = {
+            "name": f"{self._dev_name} IP",
+            "uniq_id": s3_uid,
+            "stat_t": self.topic_status_json,
+            "val_tpl": "{{ value_json.ip }}",
+            "avty": avail,
+            "dev": dev,
+            "icon": "mdi:ip-network",
+        }
+        await c.publish(f"{self._disc_prefix}/sensor/{s3_uid}/config", j(s3_cfg), qos=1, retain=True)
+        
+        # Memory used %
+        s_uid = f"pihub_{self._room}_mem_used"
+        s_cfg = {
+            "name": f"{self._dev_name} Memory Used",
+            "uniq_id": s_uid,
+            "stat_t": self.topic_status_json,
+            "unit_of_meas": "%",
+            "val_tpl": "{{ value_json.mem_used_pct }}",
+            "avty": avail,
+            "dev": dev,
+            "icon": "mdi:memory",
+            "entity_category": "diagnostic",
+        }
+        await c.publish(f"{self._disc_prefix}/sensor/{s_uid}/config", j(s_cfg), qos=1, retain=True)
+        
+        # Disk used %
+        s_uid = f"pihub_{self._room}_disk_used"
+        s_cfg = {
+            "name": f"{self._dev_name} Disk Used",
+            "uniq_id": s_uid,
+            "stat_t": self.topic_status_json,
+            "unit_of_meas": "%",
+            "val_tpl": "{{ value_json.disk_used_pct }}",
+            "avty": avail,
+            "dev": dev,
+            "icon": "mdi:harddisk",
+            "entity_category": "diagnostic",
+        }
+        await c.publish(f"{self._disc_prefix}/sensor/{s_uid}/config", j(s_cfg), qos=1, retain=True)
+        
+        # Uptime (days)
+        s_uid = f"pihub_{self._room}_uptime_days"
+        s_cfg = {
+            "name": f"{self._dev_name} Uptime (Days)",
+            "uniq_id": s_uid,
+            "stat_t": self.topic_status_json,
+            "unit_of_meas": "d",
+            "dev_cla": "duration",
+            "val_tpl": "{{ (value_json.uptime_sec | float(0) / 86400) | round(2) }}",
+            "avty": avail,
+            "dev": dev,
+            "icon": "mdi:calendar-clock",
+            "entity_category": "diagnostic",
+        }
+        await c.publish(f"{self._disc_prefix}/sensor/{s_uid}/config", j(s_cfg), qos=1, retain=True)
+        
+        # Hostname
+        s_uid = f"pihub_{self._room}_hostname"
+        s_cfg = {
+            "name": f"{self._dev_name} Hostname",
+            "uniq_id": s_uid,
+            "stat_t": self.topic_status_json,
+            "val_tpl": "{{ value_json.hostname }}",
+            "avty": avail,
+            "dev": dev,
+            "icon": "mdi:server",
+        }
+        await c.publish(f"{self._disc_prefix}/sensor/{s_uid}/config", j(s_cfg), qos=1, retain=True)
+        
+        # Undervoltage now (binary)
+        bs_uid = f"pihub_{self._room}_undervoltage_now"
+        bs_cfg = {
+            "name": f"{self._dev_name} Undervoltage (Now)",
+            "uniq_id": bs_uid,
+            "dev_cla": "problem",
+            "stat_t": self.topic_status_json,
+            "pl_on": "true",
+            "pl_off": "false",
+            "val_tpl": "{{ (value_json.undervoltage_now | default(false)) | string | lower }}",
+            "avty": avail,
+            "dev": dev,
+            "icon": "mdi:alert",
+            "entity_category": "diagnostic",
+        }
+        await c.publish(f"{self._disc_prefix}/binary_sensor/{bs_uid}/config", j(bs_cfg), qos=1, retain=True)
+        
+        # Undervoltage ever (binary)
+        bs_uid = f"pihub_{self._room}_undervoltage_ever"
+        bs_cfg = {
+            "name": f"{self._dev_name} Undervoltage (Ever)",
+            "uniq_id": bs_uid,
+            "dev_cla": "problem",
+            "stat_t": self.topic_status_json,
+            "pl_on": "true",
+            "pl_off": "false",
+            "val_tpl": "{{ (value_json.undervoltage_ever | default(false)) | string | lower }}",
+            "avty": avail,
+            "dev": dev,
+            "icon": "mdi:alert-circle-outline",
+            "entity_category": "diagnostic",
+        }
+        await c.publish(f"{self._disc_prefix}/binary_sensor/{bs_uid}/config", j(bs_cfg), qos=1, retain=True)
+        
+        # Bluetooth connected count
+        s_uid = f"pihub_{self._room}_bt_connected_count"
+        s_cfg = {
+            "name": f"{self._dev_name} BT Connected",
+            "uniq_id": s_uid,
+            "stat_t": self.topic_status_json,
+            "val_tpl": "{{ value_json.bt_connected_devices.count }}",
+            "avty": avail,
+            "dev": dev,
+            "icon": "mdi:bluetooth",
+            "entity_category": "diagnostic",
+        }
+        await c.publish(f"{self._disc_prefix}/sensor/{s_uid}/config", j(s_cfg), qos=1, retain=True)
+        
+        # Bluetooth connected MACs (nice-to-have text sensor)
+        s_uid = f"pihub_{self._room}_bt_connected_list"
+        s_cfg = {
+            "name": f"{self._dev_name} BT Devices",
+            "uniq_id": s_uid,
+            "stat_t": self.topic_status_json,
+            "val_tpl": "{{ (value_json.bt_connected_devices.macs | default([])) | join(', ') }}",
+            "avty": avail,
+            "dev": dev,
+            "icon": "mdi:format-list-bulleted",
+            "entity_category": "diagnostic",
+        }
+        
+        # HA service call display
+        await c.publish(f"{self._disc_prefix}/sensor/{s_uid}/config", j(s_cfg), qos=1, retain=True)
+        
+        svc_head_uid = f"pihub_{self._room}_ha_service_call"
+        svc_head_cfg = {
+            "name": f"{self._dev_name} HA Service",
+            "uniq_id": svc_head_uid,
+            "stat_t": f"{self.base}/ha/service/call",
+            "val_tpl": "{{ value_json.domain ~ '.' ~ value_json.service if value_json is defined else '' }}",
+            "icon": "mdi:home-assistant",
+            "avty": [{"topic": self.topic_health, "payload_available": "online", "payload_not_available": "offline"}],
+            "dev": dev,
+        }
+        await c.publish(f"{self._disc_prefix}/sensor/{svc_head_uid}/config", j(svc_head_cfg), qos=1, retain=True)
+        
+        # Activity display 
+        act_uid = f"pihub_{self._room}_activity_display"
+        act_cfg = {
+            "name": f"{self._dev_name} Activity",
+            "uniq_id": act_uid,
+            "stat_t": f"{self.base}/activity",   # e.g. pihub/living_room/activity
+            # No cmd_t → read-only
+            "avty": [{"topic": self.topic_health, "payload_available": "online", "payload_not_available": "offline"}],
+            "dev": dev,
+            "icon": "mdi:remote",
+        }
+        await c.publish(f"{self._disc_prefix}/sensor/{act_uid}/config", j(act_cfg), qos=1, retain=True)
+
 
     # ---------- Internal: status helpers (best-effort, no hard deps) ----------
 
