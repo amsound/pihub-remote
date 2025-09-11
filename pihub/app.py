@@ -222,13 +222,15 @@ async def main():
 
     # ── 9) Apple TV (optional; last) ──────────────────────────────────────────
     atv_service = None
+    pyatv_enabled = bool(getattr(room_cfg, "pyatv_enabled", False))
+    print(f"[pyatv] enabled={pyatv_enabled}")
 
     def _publish_atv_state(state: dict):
         print(f"[pyatv→mqtt] {state}")
         topic = f"{room_cfg.prefix_bridge}/pyatv/state"
         asyncio.create_task(mqtt.publish_json(topic, state))
 
-    if room_cfg.pyatv_enabled:
+    if pyatv_enabled:
         try:
             from pihub.pyatv.atv_service import AppleTvService, PyAtvCreds
             atv_service = AppleTvService(
@@ -243,6 +245,9 @@ async def main():
             dispatcher.atv = atv_service
         except ModuleNotFoundError as e:
             print(f"[pyatv] disabled or missing dependency: {e}")
+    else:
+        # Explicitly note disabled state for clarity at startup
+        print("[pyatv] disabled by config")
 
     # ── 10) Signals / lifecycle ───────────────────────────────────────────────
     loop = asyncio.get_running_loop()

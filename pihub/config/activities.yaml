@@ -79,7 +79,7 @@ activities:
       rem_ok:         [ { do: hid_consumer, name: menu_pick } ]
       rem_exit:       [ { do: hid_consumer, name: menu } ]
       rem_menu:       [ { do: hid_consumer, name: ac_home } ]
-      rem_back:       [ { do: hid_consumer, name: menu } ]
+      rem_back:       [ { do: hid_consumer, name: ac_home } ]
 
 #      rem_dir_left:   [ { do: atv, key: left,   cmd: tap } ]
 #      rem_dir_right:  [ { do: atv, key: right,  cmd: tap } ]

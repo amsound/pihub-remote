@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_DIR="/home/pi/pihub-remote"
-CONF_DIR="$REPO_DIR/config"
+CONF_DIR="$REPO_DIR/pihub/config"
 ROOM_YAML="$CONF_DIR/room.yaml"
 
 # Helpers
@@ -73,7 +73,7 @@ room=$(prompt "Room (snake_case, e.g. living_room)" "${_room:-}")
 while [ -z "$room" ]; do room=$(prompt "Room (snake_case, e.g. living_room)"); done
 
 room_title=$(printf "%s" "$room" | to_title)
-suffix_in=$(prompt "Bluetooth device suffix (CamelCase, e.g. LivingRoom)" "$(printf "%s" "$room_title" | tr -d ' ')")
+suffix_in=$(prompt "Bluetooth device suffix (CamelCase, e.g. LivingRoom)")
 bt_suffix=$(printf "%s" "$suffix_in" | to_camel_suffix)
 bt_name="PiHub-$bt_suffix"
 
@@ -83,13 +83,11 @@ mqtt_user=$(prompt "MQTT username" "${_user:-remote}")
 mqtt_pass=$(prompt "MQTT password" "${_pass:-remote}")
 
 prefix_bridge="pihub/$room"
-device_name="$room_title - PiHub"
 hostname="PiHub-$bt_suffix"
 
 echo
 echo "[install] Summary:"
 echo "  room:           $room"
-echo "  device_name:    $device_name"
 echo "  bt.device_name: $bt_name"
 echo "  mqtt.host:      $mqtt_host"
 echo "  mqtt.port:      $mqtt_port"
@@ -142,6 +140,9 @@ mqtt:
   prefix_bridge: "$prefix_bridge"
   username: "$mqtt_user"
   password: "$mqtt_pass"
+
+pyatv:
+  enabled: false
 EOF
 fi
 
@@ -149,27 +150,40 @@ echo "[install] room.yaml written at $ROOM_YAML"
 echo
 
 # ---- Systemd service ----
-echo "[install] Installing systemd service pihub-remote…"
-sudo tee /etc/systemd/system/pihub-remote.service >/dev/null <<'EOF'
+echo "[install] Installing systemd service pihub…"
+sudo tee /etc/systemd/system/pihub.service >/dev/null <<'EOF'
 [Unit]
-Description=PiHub Remote Bridge
-After=network-online.target bluetooth.service
+Description=PiHub Remote
+Requires=bluetooth.service
 Wants=network-online.target
+After=bluetooth.service network-online.target
+
+PartOf=bluetooth.service
 
 [Service]
-User=pi
+Type=simple
+
 WorkingDirectory=/home/pi/pihub-remote
-Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/pi/pihub-remote/.venv/bin/python -m pihub.app
+Environment=PYTHONUNBUFFERED=1
+
+User=pi
+Group=pi
+
 Restart=on-failure
 RestartSec=2
+StartLimitIntervalSec=30
+StartLimitBurst=10
+
+TimeoutStopSec=20
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now pihub-remote
+sudo systemctl enable --now pihub
 
 # ---- Offer to set hostname and reboot (default YES) ----
 read -rp "Set hostname to \"$hostname\" and reboot now? [Y/n]: " yn || true

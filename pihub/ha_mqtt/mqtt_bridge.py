@@ -73,8 +73,10 @@ class MqttBridge:
         self._stop = asyncio.Event()
         self._stopped = asyncio.Event()   # set after start() fully unwinds
 
-        # Outbound queue (producer: publish_ha_service; consumer: _tx_loop)
-        self._out_q: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+        # Outbound queue (bounded) + de-dupe cache
+        # item: (topic, payload, de_dupe_bool)
+        self._out_q: asyncio.Queue[tuple[str, str, bool]] = asyncio.Queue(maxsize=200)
+        self._last_sent: dict[str, str] = {}
 
     # ---------- Public API ----------
 
@@ -90,6 +92,14 @@ class MqttBridge:
                     print(f"[mqtt] connecting to {self.cfg.host}:{self.cfg.port} …")
                     async with self.client as c:
                         print("[mqtt] connected")
+
+                        # Best-effort paho client tuning (aiomqtt exposes underlying paho as ._client)
+                        with contextlib.suppress(Exception):
+                            pc = getattr(self.client, "_client", None)
+                            if pc:
+                                pc.max_inflight_messages_set(10)
+                                pc.max_queued_messages_set(1000)
+                                pc.reconnect_delay_set(min_delay=1, max_delay=30)
 
                         # Health ONLINE (retained)
                         await c.publish(self.topic_health, b"online", qos=1, retain=True)
@@ -143,6 +153,8 @@ class MqttBridge:
 
                 except MqttError as e:
                     print(f"[mqtt] connection error: {e}; retrying in {backoff:.1f}s")
+                    # Disarm paho now to avoid writer callbacks hitting a torn-down loop
+                    self._disarm_paho()
                     try:
                         await asyncio.wait_for(self._stop.wait(), timeout=backoff)
                     except asyncio.TimeoutError:
@@ -150,6 +162,7 @@ class MqttBridge:
                         continue
                 except Exception as e:
                     print(f"[mqtt] fatal error: {e}; retrying in {backoff:.1f}s")
+                    self._disarm_paho()
                     try:
                         await asyncio.wait_for(self._stop.wait(), timeout=backoff)
                     except asyncio.TimeoutError:
@@ -197,14 +210,15 @@ class MqttBridge:
             {"domain": domain, "service": service, "data": data or {}},
             separators=(",", ":"),
         )
-        await self._out_q.put((self.topic_service_call, payload))
+        # Service calls should NOT be de-duped (same call can be intentional)
+        await self._enqueue(self.topic_service_call, payload, de_dupe=False)
         
     async def publish_activity_intent(self, activity: str):
         """Publish simple activity intents Pi→HA, e.g. watch|listen|power_off."""
         topic = f"{self.base}/activity"   # e.g. pihub/living_room/activity
         payload = (activity or "").strip().lower()
         if payload:
-            await self._out_q.put((topic, payload))
+            await self._enqueue(topic, payload, de_dupe=True)
         
     async def publish_json(self, topic: str, obj: dict):
         """
@@ -212,7 +226,22 @@ class MqttBridge:
         Usage: await mqtt.publish_json("pihub/<room>/pyatv/state", state_dict)
         """
         payload = json.dumps(obj, separators=(",", ":"))
-        await self._out_q.put((topic, payload))
+        await self._enqueue(topic, payload, de_dupe=True)
+
+    # ---------- Internal: enqueue with backpressure / de-dupe ----------
+
+    async def _enqueue(self, topic: str, payload: str, de_dupe: bool):
+        """Enqueue with optional de-dupe; drop oldest on overflow to keep freshest."""
+        if de_dupe and self._last_sent.get(topic) == payload:
+            return
+        try:
+            self._out_q.put_nowait((topic, payload, de_dupe))
+        except asyncio.QueueFull:
+            # Drop oldest and ensure newest goes in (fresh state beats stale backlog)
+            with contextlib.suppress(Exception):
+                _ = self._out_q.get_nowait()
+                self._out_q.task_done()
+            await self._out_q.put((topic, payload, de_dupe))
 
     # ---------- Internal: message pump / dispatch ----------
 
@@ -260,14 +289,19 @@ class MqttBridge:
 
     async def _tx_loop(self, c: Client):
         while not self._stop.is_set():
-            topic, payload = await self._out_q.get()
+            topic, payload, de_dupe = await self._out_q.get()
             try:
                 print(f"[MQTT] tx {topic} {payload}")
                 await c.publish(topic, payload, qos=1, retain=False)
+                # Record last-sent after success (for de-dupe)
+                if de_dupe:
+                    self._last_sent[topic] = payload
+                # Crucial: yield so we never hot-spin when socket is writeable
+                await asyncio.sleep(0)
             except Exception:
                 # Requeue once and exit so start() can reconnect and respawn us
                 with contextlib.suppress(Exception):
-                    self._out_q.put_nowait((topic, payload))
+                    self._out_q.put_nowait((topic, payload, de_dupe))
                 return
             finally:
                 self._out_q.task_done()
@@ -381,7 +415,7 @@ class MqttBridge:
             "dev": dev,
             "icon": "mdi:ip-network",
         }
-        await c.publish(f"{self._disc_prefix}/sensor/{s3_uid}/config", j(s3_cfg), qos=1, retain=True)
+        await c.publish(f"{self._disc_prefix}/sensor/{s3_uid}/config", j(s_cfg), qos=1, retain=True)
         
         # Memory used %
         s_uid = f"pihub_{self._room}_mem_used"
