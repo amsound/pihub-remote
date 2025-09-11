@@ -415,7 +415,7 @@ class MqttBridge:
             "dev": dev,
             "icon": "mdi:ip-network",
         }
-        await c.publish(f"{self._disc_prefix}/sensor/{s3_uid}/config", j(s_cfg), qos=1, retain=True)
+        await c.publish(f"{self._disc_prefix}/sensor/{s3_uid}/config", j(s3_cfg), qos=1, retain=True)
         
         # Memory used %
         s_uid = f"pihub_{self._room}_mem_used"
