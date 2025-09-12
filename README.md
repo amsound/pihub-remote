@@ -5,104 +5,106 @@ It bridges a Logitech Unifying USB receiver with a button-only Harmony remote co
 
 ---
 
-## 🔧 Installation
+## Quick Install (fresh Pi)
 
 ```bash
-git clone https://github.com/amsound/pihub-remote.git
-cd pihub-remote
-chmod +x install.sh
-./install.sh
+# 1) Get bootstrap and run it
+cd /home/pi
+wget https://raw.githubusercontent.com/amsound/pihub-remote/main/bootstrap.sh
+chmod +x bootstrap.sh
+./bootstrap.sh
 ```
 
-The installer will:
+What this does:
+- Installs `git`, `python3`, `python3-venv`, `python3-pip`
+- Clones (or updates) `~/pihub-remote`
+- Runs `00-system-prep.sh` (turns **Bluetooth on**, disables **Wi-Fi** overlay if requested, applies BlueZ tuning)
+- Runs `install.sh` (creates `.venv`, installs deps, creates `/home/pi/pihub-remote/pihub/config/room.yaml`, sets hostname `PiHub-<Room>`, enables `pihub.service`)
 
-- Create a Python virtualenv and install deps (`requirements.txt`)
-- Configure **bluetoothd** with `--experimental`
-- Apply a **BlueZ** config block (LE + fast connect, etc.)
-- Create and enable a **systemd** service: `pihub.service`
-- (Optional) Set your **hostname** interactively
+After install, the service starts automatically and on boot.
 
-> Reboot after install if you changed hostname or BlueZ config.
+> Already have the repo cloned? You can still run `./bootstrap.sh`—it will just pull latest and continue.
 
----
+## Configuration
 
-## ⚙️ Configuration
+Your per-Pi config lives at:
+```
+/home/pi/pihub-remote/pihub/config/room.yaml
+```
 
-Edit just one file per room:
-
-`pihub/config/room.yaml`:
+Example:
 ```yaml
 room: "living_room"
-device_name: "PiHub-LivingRoom"   # Bluetooth advertised name (and suggested hostname)
+
+bt:
+  enabled: true
+  device_name: "PiHub-LivingRoom"
+
 mqtt:
-  host: "192.168.70.24"
+  host: "192.168.xx.xx"
   port: 1883
   prefix_bridge: "pihub/living_room"
   username: "remote"
   password: "remote"
 
-entities:
-  input_select_activity: "input_select.living_room_activity"
-  speakers: "media_player.living_room_speakers_unified"
-  radio_script: "script.living_room_universal_radio_tune"
-  mute_script: "script.living_room_toggle_mute"
+pyatv:
+  enabled: false
 ```
 
-`activities.yaml`, `keymap.yaml` and `macros/` are **static** and don’t need per-room edits.  
-Entity names inside activities are substituted from `room.yaml`.
+> The repo contains `pihub/config/room.example.yaml` and **ignores** your real `room.yaml`, so updates won’t overwrite your local settings.
 
----
+## Service control
 
-## 📡 MQTT Topics
+```bash
+sudo systemctl status pihub
+sudo systemctl restart pihub
+sudo journalctl -u pihub -f
+```
 
-- **Health (retained):** `pihub/<room>/health` → `online` / `offline`  
-- **Status JSON:** `pihub/<room>/status/json` → CPU/Mem/Disk/IP/Uptime/Temp/Undervoltage/BT devices  
-- **Activity state (HA → PiHub):**  
-  `pihub/<room>/input_select/<input_select_activity>/state`  
-- **Service calls (PiHub → HA):**  
-  `pihub/<room>/ha/service/call` (payload: `{"domain":"...","service":"...","data":{...}}`)  
-- **Commands/macros (HA → PiHub):**  
-  `pihub/<room>/cmd/<namespace>/...` (e.g. `.../cmd/atv/on`)
+## MQTT Topics (contract)
 
----
+PiHub publishes/subscribes on these topics:
 
-## 🔌 Bluetooth (BlueZ) Settings
+- **Availability** (retained):  
+  `pihub/<room>/health` → `online` / `offline`
 
-The installer adds:
-- **bluetoothd** `--experimental` drop-in
-- Main BlueZ options:
-  ```
-  ControllerMode = le
-  FastConnectable = true
-  Privacy = off
-  JustWorksRepairing = always
-  ```
-- LE timing in the `[LE]` section:
-  ```
-  MinConnectionInterval = 12
-  MaxConnectionInterval = 24
-  ConnectionLatency = 0
-  ConnectionSupervisionTimeout = 200
+- **Activity (from HA statestream)** (retained in HA):  
+  `pihub/input_select/<room>_activity/state` → e.g. `power_off|watch|listen`
+
+- **Activity intent (Pi → HA)** (non-retained):  
+  `pihub/<room>/activity` → current activity string
+
+- **Service call (HA → PiHub)** (non-retained, QoS 1):  
+  `pihub/<room>/ha/service/call`  
+  Payload:
+  ```json
+  {"domain":"media_player","service":"volume_up","data":{"entity_id":"speakers"}}
   ```
 
----
+- **Commands (HA → PiHub)** (non-retained):  
+  `pihub/<room>/cmd/#` → arbitrary namespaced commands
 
-## ▶️ Service
+- **Status snapshot (Pi → HA)** (non-retained, ~every 120s):  
+  `pihub/<room>/status/json` → `{ "cpu_temp_c": 44.5, "cpu_load_pct": 3.2, "mem_used_pct": 28.1, "disk_used_pct": 11.4, "ip": "…", "uptime_sec": 12345, "hostname": "PiHub-Kitchen", "bt_connected_devices": { "count": 1, "macs": ["AA:BB:…"] }, "undervoltage_now": false, "undervoltage_ever": false, "ts": 1694… }`
 
-- Start/stop:
-  ```bash
-  sudo systemctl start pihub
-  sudo systemctl stop pihub
-  ```
-- Logs (follow):
-  ```bash
-  journalctl -u pihub -f -o cat
-  ```
+Home Assistant MQTT Discovery is published under `homeassistant/` (retained) so the Pi shows up as a device with diagnostic sensors automatically.
 
----
+## Updating code
 
-## ✅ Summary
+**Dev Pi:**
+```bash
+cd ~/pihub-remote
+git add .
+git commit -m "Message"
+git push
+```
 
-- Install once → edit `room.yaml` → reboot → pair from TV/box  
-- BLE HID + Home Assistant MQTT bridge  
-- Clean, room-only config surface
+**Client Pi(s):**
+```bash
+cd ~/pihub-remote
+git fetch origin
+git reset --hard origin/main
+sudo systemctl restart pihub
+```
+
+Your `pihub/config/room.yaml` is untracked/ignored, so it won’t be touched.
