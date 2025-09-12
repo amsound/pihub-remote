@@ -99,7 +99,7 @@ activities:
       rem_ch_up:      [ { do: hid_keyboard, name: page_up } ]
       rem_ch_down:    [ { do: hid_keyboard, name: page_down } ]
       
-      rem_dvr:    [ { do: hid_keyboard, name: f3 } ]
+      rem_dvr:    [ { do: hid_keyboard, name: f1 } ]
       rem_guide:    [ { do: hid_consumer, name: guide } ]
       rem_red:    [ { do: hid_consumer, name: red } ]
       rem_green:    [ { do: hid_consumer, name: green } ]
