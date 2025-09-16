@@ -73,10 +73,13 @@ async def main():
 
     # ── 3) Dispatcher (seed with Noop HID; we’ll attach real HID later) ─────────
     class NoopHID:
-        def key_down(self, *_args, **_kw): pass
-        def key_up(self): pass
-        def consumer_down(self, *_args, **_kw): pass
-        def consumer_up(self): pass
+        async def key_down(self, *_args, **_kw): pass
+        async def key_up(self): pass
+        async def consumer_down(self, *_args, **_kw): pass
+        async def consumer_up(self): pass
+        async def consumer_tap(self, *_args, **_kw):
+            # no-op placeholder until BLE HID consumer support is wired up
+            pass
 
     dispatcher = Dispatcher(
         hid_client=NoopHID(),

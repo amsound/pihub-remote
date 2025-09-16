@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 
 KEEPALIVE_MS = 20  # Time between repeated key reports
 
@@ -49,19 +50,26 @@ class HIDClient:
         except asyncio.CancelledError:
             pass
 
-    def key_down(self, usage: int, modifiers: int = 0):
+    async def key_down(self, usage: int, modifiers: int = 0):
         self._kb_usage = usage
         self._kb_mods = modifiers
         self._kb_apply()
 
         if self._kb_task:
-            self._kb_task.cancel()
+            task = self._kb_task
+            self._kb_task = None
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         self._kb_task = asyncio.create_task(self._repeat_keyboard())
 
-    def key_up(self):
+    async def key_up(self):
         if self._kb_task:
-            self._kb_task.cancel()
+            task = self._kb_task
             self._kb_task = None
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
         self._kb_usage = None
         self._kb_apply()
@@ -99,18 +107,25 @@ class HIDClient:
         except asyncio.CancelledError:
             pass
 
-    def consumer_down(self, usage: int):
+    async def consumer_down(self, usage: int):
         self._cc_usage = usage
         self._cc_apply()
 
         if self._cc_task:
-            self._cc_task.cancel()
+            task = self._cc_task
+            self._cc_task = None
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         self._cc_task = asyncio.create_task(self._repeat_consumer())
 
-    def consumer_up(self):
+    async def consumer_up(self):
         if self._cc_task:
-            self._cc_task.cancel()
+            task = self._cc_task
             self._cc_task = None
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
         self._cc_usage = None
         self._cc_apply()
@@ -118,6 +133,6 @@ class HIDClient:
         
     async def consumer_tap(self, usage: int, hold_ms: int = 60):
         """Press and release a consumer control key with a hold duration."""
-        self.consumer_down(usage)
+        await self.consumer_down(usage)
         await asyncio.sleep(hold_ms / 1000)
-        self.consumer_up()
+        await self.consumer_up()

@@ -180,10 +180,10 @@ class Dispatcher:
                 return
             if edge == "down":
                 if DEBUG_HID: print(f"[dispatch→hid] consumer DOWN {name} (0x{usage:04X})")
-                self.hid.consumer_down(usage)
+                await self.hid.consumer_down(usage)
             elif edge == "up":
                 if DEBUG_HID: print(f"[dispatch→hid] consumer UP   {name} (→0)")
-                self.hid.consumer_up()
+                await self.hid.consumer_up()
             return
     
         if kind == "hid_keyboard":
@@ -193,10 +193,10 @@ class Dispatcher:
                 return
             if edge == "down":
                 if DEBUG_HID: print(f"[dispatch→hid] keyboard DOWN {name} (0x{code:02X})")
-                self.hid.key_down(code)
+                await self.hid.key_down(code)
             elif edge == "up":
                 if DEBUG_HID: print(f"[dispatch→hid] keyboard UP   {name}")
-                self.hid.key_up()
+                await self.hid.key_up()
             return
 
         # 2) Home Assistant service (via MQTT), supports repeat on HOLD

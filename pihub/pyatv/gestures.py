@@ -1,6 +1,7 @@
 # pihub/pyatv/gestures.py
 import asyncio
 import time
+import contextlib
 from typing import Callable, Optional, Dict
 
 class GestureResolver:

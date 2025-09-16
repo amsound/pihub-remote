@@ -4,7 +4,9 @@ activities:
   power_off:
     map:
       rem_power_off:
-        do: noop
+        - do: activity_intent
+          when: down
+          to: power_off
 
       rem_activity_1:
         - do: activity_intent
@@ -32,7 +34,7 @@ activities:
         - do: activity_intent
           when: down
           to: listen
-          min_hold_ms: 800
+          min_hold_ms: 500
 
       rem_activity_2:
         - do: activity_intent

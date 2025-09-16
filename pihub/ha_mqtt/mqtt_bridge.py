@@ -7,6 +7,7 @@ import shutil
 import socket
 import subprocess
 import time
+import random
 from dataclasses import dataclass
 
 from aiomqtt import Client, MqttError, Will
@@ -51,8 +52,8 @@ class MqttBridge:
         self._dev_name = f"{self._room.replace('_',' ').title()} - PiHub"
         self._disc_prefix = "homeassistant"
         
+        self.topic_activity       = f"{self.base}/activity"
         self.topic_service_call   = f"{self.base}/ha/service/call"
-        # OLD self.topic_activity_state = f"{self.base}/input_select/{cfg.input_select_entity}/state"
         
         # Listen to HA statestream here (no room segment in the path)
         self.topic_activity_state = f"{self.ss_base}/input_select/{cfg.input_select_entity}/state"
@@ -73,10 +74,22 @@ class MqttBridge:
         self._stop = asyncio.Event()
         self._stopped = asyncio.Event()   # set after start() fully unwinds
 
-        # Outbound queue (bounded) + de-dupe cache
-        # item: (topic, payload, de_dupe_bool)
-        self._out_q: asyncio.Queue[tuple[str, str, bool]] = asyncio.Queue(maxsize=200)
+        # ----- Outbound lanes -----
+        # High-priority commands (precious): QoS1, short TTL, never de-duped
+        self._q_cmd: asyncio.Queue[tuple[float, str, str]] = asyncio.Queue(maxsize=32)
+        # Coalesced state: last-wins per topic (latest only)
+        self._q_state: dict[str, str] = {}
+        
+        # Optional cache (kept for observability/future; not relied on)
         self._last_sent: dict[str, str] = {}
+        
+        # Tuning knobs
+        self._CMD_TTL_SEC = 10.0
+        self._INFLIGHT_LIMIT = 8
+        
+        # Track HA’s ground-truth activity (from the subscribed state topic)
+        self._last_activity_state: str | None = None
+
 
     # ---------- Public API ----------
 
@@ -152,22 +165,28 @@ class MqttBridge:
                         backoff = 1.0  # reset backoff on clean loop exit
 
                 except MqttError as e:
-                    print(f"[mqtt] connection error: {e}; retrying in {backoff:.1f}s")
-                    # Disarm paho now to avoid writer callbacks hitting a torn-down loop
                     self._disarm_paho()
+                    # Jittered backoff: 1,2,4,8,16,30s ±20% to avoid retry collisions
+                    base = 1.0 if backoff is None or backoff <= 0 else min(30.0, backoff * 2)
+                    jitter = 0.8 + (random.random() * 0.4)  # 0.8–1.2
+                    backoff = min(30.0, base) * jitter
+                    print(f"[mqtt] connection error: {e}; retrying in {backoff:.1f}s")
                     try:
                         await asyncio.wait_for(self._stop.wait(), timeout=backoff)
                     except asyncio.TimeoutError:
-                        backoff = min(backoff * 2, 30.0)
                         continue
                 except Exception as e:
-                    print(f"[mqtt] fatal error: {e}; retrying in {backoff:.1f}s")
                     self._disarm_paho()
+                    # Jittered backoff: 1,2,4,8,16,30s ±20% to avoid retry collisions
+                    base = 1.0 if backoff is None or backoff <= 0 else min(30.0, backoff * 2)
+                    jitter = 0.8 + (random.random() * 0.4)  # 0.8–1.2
+                    backoff = min(30.0, base) * jitter
+                    print(f"[mqtt] fatal error: {e}; retrying in {backoff:.1f}s")
                     try:
                         await asyncio.wait_for(self._stop.wait(), timeout=backoff)
                     except asyncio.TimeoutError:
-                        backoff = min(backoff * 2, 30.0)
                         continue
+
         finally:
             # We are completely out of `async with Client` here.
             # Disarm paho so its __del__ can't poke a closed loop later.
@@ -210,15 +229,17 @@ class MqttBridge:
             {"domain": domain, "service": service, "data": data or {}},
             separators=(",", ":"),
         )
-        # Service calls should NOT be de-duped (same call can be intentional)
-        await self._enqueue(self.topic_service_call, payload, de_dupe=False)
+        await self._enqueue_cmd(self.topic_service_call, payload)
+
         
     async def publish_activity_intent(self, activity: str):
-        """Publish simple activity intents Pi→HA, e.g. watch|listen|power_off."""
-        topic = f"{self.base}/activity"   # e.g. pihub/living_room/activity
+        """Publish activity intents Pi→HA (watch|listen|power_off) as commands."""
+        topic = f"{self.base}/activity"
         payload = (activity or "").strip().lower()
-        if payload:
-            await self._enqueue(topic, payload, de_dupe=True)
+        if not payload:
+            return
+        # Treat intents as commands → never de-dupe; avoids the “power_off suppressed” edge case
+        await self._enqueue_cmd(topic, payload)
         
     async def publish_json(self, topic: str, obj: dict):
         """
@@ -226,22 +247,25 @@ class MqttBridge:
         Usage: await mqtt.publish_json("pihub/<room>/pyatv/state", state_dict)
         """
         payload = json.dumps(obj, separators=(",", ":"))
-        await self._enqueue(topic, payload, de_dupe=True)
+        await self._enqueue_state(topic, payload)
 
-    # ---------- Internal: enqueue with backpressure / de-dupe ----------
-
-    async def _enqueue(self, topic: str, payload: str, de_dupe: bool):
-        """Enqueue with optional de-dupe; drop oldest on overflow to keep freshest."""
-        if de_dupe and self._last_sent.get(topic) == payload:
-            return
+    # ---------- Internal: enqueue (priority split) ----------
+    
+    async def _enqueue_cmd(self, topic: str, payload: str):
+        """Enqueue a precious command with timestamp; tiny bounded buffer."""
+        ts = asyncio.get_running_loop().time()
         try:
-            self._out_q.put_nowait((topic, payload, de_dupe))
+            self._q_cmd.put_nowait((ts, topic, payload))
         except asyncio.QueueFull:
-            # Drop oldest and ensure newest goes in (fresh state beats stale backlog)
+            # Keep freshest: drop one oldest then insert newest
             with contextlib.suppress(Exception):
-                _ = self._out_q.get_nowait()
-                self._out_q.task_done()
-            await self._out_q.put((topic, payload, de_dupe))
+                _ = self._q_cmd.get_nowait(); self._q_cmd.task_done()
+            await self._q_cmd.put((ts, topic, payload))
+    
+    async def _enqueue_state(self, topic: str, payload: str):
+        """Coalesce by topic (last-wins). No backlog; only latest survives."""
+        self._q_state[topic] = payload
+
 
     # ---------- Internal: message pump / dispatch ----------
 
@@ -257,54 +281,127 @@ class MqttBridge:
         else:
             async for m in messages_mgr:
                 await self._dispatch_message(m)
+                
+    def _topic_str(self, t) -> str:
+        """Best-effort stringify for aiomqtt/paho Topic objects."""
+        try:
+            if isinstance(t, str):
+                return t
+            # Some clients expose .value for topics; otherwise str(t) is fine
+            v = getattr(t, "value", None)
+            return v if isinstance(v, str) else str(t)
+        except Exception:
+            return ""
 
     async def _dispatch_message(self, m):
-        topic = str(m.topic)
-        payload_bytes = m.payload or b""
-        payload = payload_bytes.decode("utf-8", errors="replace").strip()
-
-        if topic == self.topic_activity_state:
-            print(f"[MQTT] state {topic} = '{payload}'")
+        """Handle inbound messages (activity state, commands)."""
+        # --- normalize topic ---
+        raw_topic = getattr(m, "topic", "")
+        topic = self._topic_str(raw_topic)
+    
+        # --- normalize payload ---
+        # Some clients give bytes, some stream-like objects
+        p = getattr(m, "payload", b"")
+        if hasattr(p, "read"):
             try:
-                res = self.on_activity_state(payload)  # may be sync or async
-                if asyncio.iscoroutine(res):
-                    await res
-            except Exception as e:
-                print(f"[MQTT] on_activity_state error: {e}")
-            return
-            
-        if topic.startswith(self.topic_cmd_base + "/"):
-            cmd_name = topic[len(self.topic_cmd_base) + 1:]  # e.g. "tv/on"
-            print(f"[MQTT] cmd '{cmd_name}' payload='{payload}'")
-            if self.on_command:
-                try:
-                    res = self.on_command(cmd_name, m.payload or b"")
-                    if asyncio.iscoroutine(res):
-                        await res
-                except Exception as e:
-                    print(f"[MQTT] on_command error: {e}")
-            return
-
-    # ---------- Internal: TX queue loop ----------
-
-    async def _tx_loop(self, c: Client):
-        while not self._stop.is_set():
-            topic, payload, de_dupe = await self._out_q.get()
-            try:
-                print(f"[MQTT] tx {topic} {payload}")
-                await c.publish(topic, payload, qos=1, retain=False)
-                # Record last-sent after success (for de-dupe)
-                if de_dupe:
-                    self._last_sent[topic] = payload
-                # Crucial: yield so we never hot-spin when socket is writeable
-                await asyncio.sleep(0)
+                payload = await p.read()
             except Exception:
-                # Requeue once and exit so start() can reconnect and respawn us
-                with contextlib.suppress(Exception):
-                    self._out_q.put_nowait((topic, payload, de_dupe))
-                return
-            finally:
-                self._out_q.task_done()
+                payload = b""
+        else:
+            payload = p
+    
+        # Track HA activity state so bridge knows ground truth
+        if topic == self.topic_activity_state:
+            try:
+                self._last_activity_state = (
+                    payload.decode() if isinstance(payload, (bytes, bytearray))
+                    else str(payload)
+                ).strip().lower()
+            except Exception:
+                self._last_activity_state = None
+            # Pass through to your existing callback
+            with contextlib.suppress(Exception):
+                self.on_activity_state and self.on_activity_state(self._last_activity_state or "")
+            return
+    
+        # Command topics (HA → PiHub); ensure base is a string too
+        cmd_base = str(self.topic_cmd_base)
+        if topic.startswith(cmd_base + "/"):
+            name = topic[len(cmd_base) + 1 :]
+            data = payload if isinstance(payload, (bytes, bytearray)) else bytes(str(payload), "utf-8")
+            with contextlib.suppress(Exception):
+                self.on_command and self.on_command(name, data)
+            return
+
+
+
+    # ---------- Internal: priority TX loop ----------
+    
+    async def _tx_loop(self, c: Client):
+        """
+        Drain commands first (QoS1, TTL), then trickle one state message (QoS0).
+        """
+        while not self._stop.is_set():
+            sent_any = False
+    
+            # 1) Commands first
+            while True:
+                try:
+                    ts, topic, payload = self._q_cmd.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                age = asyncio.get_running_loop().time() - ts
+                if age > self._CMD_TTL_SEC:
+                    # Stale; drop quietly
+                    self._q_cmd.task_done()
+                    continue
+                try:
+                    fut = await c.publish(topic, payload, qos=1, retain=False)
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(fut, timeout=5.0)
+                    sent_any = True
+                except asyncio.TimeoutError:
+                    # Broker sluggish — requeue and try later
+                    await self._requeue_cmd_front(ts, topic, payload)
+                    await asyncio.sleep(0)
+                    break
+                except Exception:
+                    # Likely disconnect — requeue and let outer connect loop recover
+                    await self._requeue_cmd_front(ts, topic, payload)
+                    await asyncio.sleep(0)
+                    break
+                finally:
+                    self._q_cmd.task_done()
+    
+            # 2) One state message (latest per topic)
+            if self._q_state:
+                topic, payload = self._q_state.popitem()
+                try:
+                    fut = await c.publish(topic, payload, qos=0, retain=False)
+                    with contextlib.suppress(Exception):
+                        await fut
+                    self._last_sent[topic] = payload
+                    sent_any = True
+                except Exception:
+                    # Put it back; reconnect will retry
+                    self._q_state[topic] = payload
+    
+            # 3) Yield; tiny nap if idle
+            await asyncio.sleep(0 if sent_any else 0.02)
+            
+    async def _requeue_cmd_front(self, ts: float, topic: str, payload: str):
+        """Requeue a command at the front (best-effort) to preserve ordering under errors."""
+        try:
+            tmp = [(ts, topic, payload)]
+            with contextlib.suppress(Exception):
+                while True:
+                    tmp.append(self._q_cmd.get_nowait()); self._q_cmd.task_done()
+            for item in tmp:
+                await self._q_cmd.put(item)
+        except Exception:
+            with contextlib.suppress(Exception):
+                await self._q_cmd.put((ts, topic, payload))
+
 
     # ---------- Internal: periodic status publisher ----------
 
