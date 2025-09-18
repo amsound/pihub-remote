@@ -5,6 +5,11 @@ echo "[prep] Updating system packages…"
 sudo apt update
 sudo apt full-upgrade -y
 
+echo "[prep] Disabling swap (dphys-swapfile)…"
+sudo systemctl disable --now dphys-swapfile 2>/dev/null || true
+sudo apt-get purge -y dphys-swapfile 2>/dev/null || true
+swapon --show || echo "[prep] Swap successfully disabled"
+
 echo "[prep] Installing minimal deps (no Wi-Fi tools, no libraspberrypi-bin)…"
 sudo apt install -y git python3 python3-venv python3-pip \
   bluez rfkill jq mosquitto-clients
