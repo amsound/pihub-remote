@@ -172,8 +172,6 @@ Group=pi
 
 Restart=on-failure
 RestartSec=2
-StartLimitIntervalSec=30
-StartLimitBurst=10
 
 TimeoutStopSec=20
 NoNewPrivileges=true
