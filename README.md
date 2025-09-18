@@ -18,7 +18,7 @@ chmod +x bootstrap.sh
 What this does:
 - Installs `git`, `python3`, `python3-venv`, `python3-pip`
 - Clones (or updates) `~/pihub-remote`
-- Runs `00-system-prep.sh` (turns **Bluetooth on**, disables **Wi-Fi** overlay if requested, applies BlueZ tuning)
+- Runs `00-system-prep.sh` (turns **Bluetooth on**, disables **Wi-Fi** overlay, applies BlueZ tuning etc.)
 - Runs `install.sh` (creates `.venv`, installs deps, creates `/home/pi/pihub-remote/pihub/config/room.yaml`, sets hostname `PiHub-<Room>`, enables `pihub.service`)
 
 After install, the service starts automatically and on boot.
@@ -61,33 +61,61 @@ sudo systemctl restart pihub
 sudo journalctl -u pihub -f
 ```
 
-## MQTT Topics (contract)
+### MQTT Topics (contract)
 
-PiHub publishes/subscribes on these topics:
+PiHub exchanges MQTT messages with Home Assistant via the following topics.
 
-- **Availability** (retained):  
-  `pihub/<room>/health` → `online` / `offline`
+---
 
-- **Activity (from HA statestream)** (retained in HA):  
-  `pihub/input_select/<room>_activity/state` → e.g. `power_off|watch|listen`
+#### RX (PiHub subscribes)
 
-- **Activity intent (Pi → HA)** (non-retained):  
-  `pihub/<room>/activity` → current activity string
+| Topic                                | Retained | QoS | Purpose                          |
+|--------------------------------------|----------|-----|----------------------------------|
+| `pihub/input_select/<room>_activity/state` | Yes      | 1   | Current activity from HA statestream |
+| `pihub/<room>/cmd/#`                 | No       | 1   | Arbitrary inbound commands from HA |
 
-- **Service call (HA → PiHub)** (non-retained, QoS 1):  
-  `pihub/<room>/ha/service/call`  
-  Payload:
-  ```json
-  {"domain":"media_player","service":"volume_up","data":{"entity_id":"speakers"}}
-  ```
+---
 
-- **Commands (HA → PiHub)** (non-retained):  
-  `pihub/<room>/cmd/#` → arbitrary namespaced commands
+#### TX (PiHub publishes)
 
-- **Status snapshot (Pi → HA)** (non-retained, ~every 120s):  
-  `pihub/<room>/status/json` → `{ "cpu_temp_c": 44.5, "cpu_load_pct": 3.2, "mem_used_pct": 28.1, "disk_used_pct": 11.4, "ip": "…", "uptime_sec": 12345, "hostname": "PiHub-Kitchen", "bt_connected_devices": { "count": 1, "macs": ["AA:BB:…"] }, "undervoltage_now": false, "undervoltage_ever": false, "ts": 1694… }`
+| Topic                        | Retained | QoS | Purpose                          |
+|------------------------------|----------|-----|----------------------------------|
+| `pihub/<room>/activity`      | No       | 1   | Current activity intent (e.g. watch) |
+| `pihub/<room>/ha/service/call` | No    | 1   | Request HA service calls (JSON payload) |
+| `pihub/<room>/status/json`   | Yes      | 1   | Availability + status snapshot (online/offline + attrs) |
 
-Home Assistant MQTT Discovery is published under `homeassistant/` (retained) so the Pi shows up as a device with diagnostic sensors automatically.
+---
+
+#### Status Snapshot Payload
+
+Published on: `pihub/<room>/status/json`
+
+```json
+{
+  "state": "online",
+  "attr": {
+    "ts": 1694123456,
+    "host": "PiHub-LivingRoom",
+    "ip_addr": "192.168.70.23",
+    "uptime_s": 12345,
+    "cpu_temp_c": 44.5,
+    "cpu_load_pct": 3.2,
+    "mem_used_pct": 28.1,
+    "disk_used_pct": 11.4,
+    "bt_connected_count": 1,
+    "bt_connected_macs": ["AA:BB:CC:DD:EE:FF"],
+    "pi_undervoltage": false,
+    "pi_undervoltage_ever": false
+  }
+}
+```
+
+---
+
+#### Home Assistant Discovery
+
+- Published under `homeassistant/...` (retained, QoS 1).  
+- Auto-creates a device `<Room Pretty> - PiHub` with diagnostic sensors (host, IP, uptime, BT, CPU, memory, disk, undervoltage).  
 
 ## Updating code
 
