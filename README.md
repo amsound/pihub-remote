@@ -61,7 +61,7 @@ sudo systemctl restart pihub
 sudo journalctl -u pihub -f
 ```
 
-### MQTT Topics (contract)
+## MQTT Topics (contract)
 
 PiHub exchanges MQTT messages with Home Assistant via the following topics.
 
