@@ -80,10 +80,10 @@ class MqttBridge:
         if self._core.username:
             self.client.username_pw_set(self._core.username, self._core.password)
 
-        # LWT: unified status JSON topic with {"state":"offline"} (non-retained)
+        # LWT: retained offline with empty attr (so HA templates never break)
         self.client.will_set(
             self._topics.status_json.topic,
-            payload=json.dumps({"state": "offline"}),
+            payload=json.dumps({"state": "offline", "attr": {}}),
             qos=1,
             retain=True,
         )
@@ -137,9 +137,9 @@ class MqttBridge:
             if self.client.is_connected():
                 self.client.publish(
                     self._topics.status_json.topic,
-                    json.dumps({"state": "offline"}),
+                    json.dumps({"state": "offline", "attr": {}}),
                     qos=1,
-                    retain=True
+                    retain=True,
                 )
         except Exception:
             pass
@@ -196,8 +196,13 @@ class MqttBridge:
         session_present = bool(sp)
         print(f"[mqtt] connected; session_present={session_present}")
 
-        # ONLINE immediately
-        client.publish(self._topics.status_json.topic, json.dumps({"state": "online"}), qos=1, retain=True)
+        # ONLINE immediately (include empty attr)
+        client.publish(
+            self._topics.status_json.topic,
+            json.dumps({"state": "online", "attr": {}}),
+            qos=1,
+            retain=True,
+        )
 
         # Always (re)subscribe so changes to topics take effect
         # Use the statestream topic *with* the _activity suffix from config

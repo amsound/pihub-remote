@@ -82,7 +82,7 @@ PiHub exchanges MQTT messages with Home Assistant via the following topics.
 |------------------------------|----------|-----|----------------------------------|
 | `pihub/<room>/activity`      | No       | 1   | Current activity intent (e.g. watch) |
 | `pihub/<room>/ha/service/call` | No    | 1   | Request HA service calls (JSON payload) |
-| `pihub/<room>/status/json`   | Yes      | 1   | Availability + status snapshot (online/offline + attrs) |
+| `pihub/<room>/status/json`   | No      | 0   | Availability + status snapshot (online/offline + attrs) |
 
 ---
 

@@ -83,20 +83,20 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         "unique_id": f"pihub_{room}_online",
         "device_class": "connectivity",
         "state_topic": state_topic,
-        "value_template": "{{ 'ON' if value_json.state == 'online' else 'OFF' }}",
+        "value_template": "{{ 'ON' if value_json.state | default('offline') == 'online' else 'OFF' }}",
         "payload_on": "ON",
         "payload_off": "OFF",
         "icon": "mdi:check-network-outline",
         **avail,
         "device": device,
     })
-
+    
     pub("binary_sensor", "pi_undervoltage_now", {
         "name": "Pi Undervoltage (Now)",
         "unique_id": f"pihub_{room}_pi_undervoltage_now",
         "device_class": "problem",
         "state_topic": state_topic,
-        "value_template": "{{ 'ON' if value_json.attr.pi_undervolt else 'OFF' }}",
+        "value_template": "{{ 'ON' if value_json.attr.pi_undervolt | default(false) else 'OFF' }}",
         "payload_on": "ON",
         "payload_off": "OFF",
         "icon": "mdi:alert",
@@ -104,13 +104,13 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         **avail,
         "device": device,
     })
-
+    
     pub("binary_sensor", "pi_undervoltage_ever", {
         "name": "Pi Undervoltage (Ever)",
         "unique_id": f"pihub_{room}_pi_undervoltage_ever",
         "device_class": "problem",
         "state_topic": state_topic,
-        "value_template": "{{ 'ON' if value_json.attr.pi_undervolt_ever else 'OFF' }}",
+        "value_template": "{{ 'ON' if value_json.attr.pi_undervolt_ever | default(false) else 'OFF' }}",
         "payload_on": "ON",
         "payload_off": "OFF",
         "icon": "mdi:alert-circle-outline",
@@ -124,9 +124,8 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         "name": "Activity",
         "unique_id": f"pihub_{room}_activity_display",
         "state_topic": topics.activity.topic,  # e.g. pihub/<room>/activity
-        "value_template": "{{ value }}",       # payload is raw string like "watch"
+        "value_template": "{{ value | default('-') }}",  # payload is raw string like "watch"
         "icon": "mdi:remote",
-        # availability still driven by the status JSON topic:
         **avail,
         "device": device,
     })
@@ -136,7 +135,7 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         "name": "HA Service",
         "unique_id": f"pihub_{room}_ha_service_call",
         "state_topic": topics.ha_service_call.topic,  # e.g. pihub/<room>/ha/service/call
-        "value_template": "{{ value_json.domain ~ '.' ~ value_json.service if value_json is defined else '-' }}",
+        "value_template": "{{ (value_json.domain ~ '.' ~ value_json.service) if value_json is defined else '-' }}",
         "icon": "mdi:home-assistant",
         **avail,
         "device": device,
@@ -157,28 +156,48 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         pub("sensor", uid_suffix, cfg)
 
     # Core sensors (with nicer icons and names)
-    sensor("hostname", "Hostname", "{{ value_json.attr.host }}", {"icon": "mdi:server"})
-    sensor("ip_addr", "IP Address", "{{ value_json.attr.ip_addr }}", {"icon": "mdi:ip-network"})
-    sensor(
-        "uptime_human",
-        "Uptime",
-        "{{ (value_json.attr.uptime_s // 86400) | int }}d {{ ((value_json.attr.uptime_s % 86400) // 3600) | int }}h",
-        {"icon": "mdi:calendar-clock", "entity_category": "diagnostic"},
-    )
-
-    sensor("bt_count", "BT Connected", "{{ value_json.attr.bt_connected_count }}",
+    sensor("hostname", "Hostname",
+           "{{ value_json.attr.host | default('-') }}",
+           {"icon": "mdi:server"})
+    
+    sensor("ip_addr", "IP Address",
+           "{{ value_json.attr.ip_addr | default('-') }}",
+           {"icon": "mdi:ip-network"})
+    
+    sensor("uptime_human", "Uptime",
+           "{{ ((value_json.attr.uptime_s | default(0)) // 86400) | int }}d "
+           "{{ (((value_json.attr.uptime_s | default(0)) % 86400) // 3600) | int }}h",
+           {"icon": "mdi:calendar-clock", "entity_category": "diagnostic"})
+    
+    # Bluetooth
+    sensor("bt_count", "BT Connected",
+           "{{ value_json.attr.bt_connected_count | default(0) }}",
            {"icon": "mdi:bluetooth", "state_class": "measurement", "entity_category": "diagnostic"})
-    sensor("bt_macs", "BT Devices", "{{ value_json.attr.bt_connected_macs or '-' }}",
+    
+    sensor("bt_macs", "BT Devices",
+           "{{ value_json.attr.bt_connected_macs | default('-', true) }}",
            {"icon": "mdi:bluetooth-connect", "entity_category": "diagnostic"})
-    sensor("cpu_load_pct", "CPU Load", "{{ value_json.attr.cpu_load_pct }}",
-           {"icon": "mdi:chip", "unit_of_measurement": "%", "state_class": "measurement", "entity_category": "diagnostic"})
-    sensor("cpu_temp", "CPU Temp", "{{ value_json.attr.cpu_temp_c }}",
+    
+    # CPU / Temp / Disk / Memory
+    sensor("cpu_load_pct", "CPU Load",
+           "{{ value_json.attr.cpu_load_pct | default(0) }}",
+           {"icon": "mdi:chip", "unit_of_measurement": "%", "state_class": "measurement",
+            "entity_category": "diagnostic"})
+    
+    sensor("cpu_temp", "CPU Temp",
+           "{{ value_json.attr.cpu_temp_c | default(0) }}",
            {"icon": "mdi:thermometer", "device_class": "temperature", "unit_of_measurement": "°C",
             "state_class": "measurement", "entity_category": "diagnostic"})
-    sensor("disk_used_pct", "Disk Used", "{{ value_json.attr.disk_used_pct }}",
-           {"icon": "mdi:harddisk", "unit_of_measurement": "%", "state_class": "measurement", "entity_category": "diagnostic"})
-    sensor("mem_used_pct", "Memory Used", "{{ value_json.attr.mem_used_pct }}",
-           {"icon": "mdi:memory", "unit_of_measurement": "%", "state_class": "measurement", "entity_category": "diagnostic"})
+    
+    sensor("disk_used_pct", "Disk Used",
+           "{{ value_json.attr.disk_used_pct | default(0) }}",
+           {"icon": "mdi:harddisk", "unit_of_measurement": "%", "state_class": "measurement",
+            "entity_category": "diagnostic"})
+    
+    sensor("mem_used_pct", "Memory Used",
+           "{{ value_json.attr.mem_used_pct | default(0) }}",
+           {"icon": "mdi:memory", "unit_of_measurement": "%", "state_class": "measurement",
+            "entity_category": "diagnostic"})
 
 
 def publish_status(bridge: Any, topics: "Topics", *, online: bool, extra: Dict[str, Any] | None = None) -> None:
