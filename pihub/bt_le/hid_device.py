@@ -211,6 +211,11 @@ async def watch_link(bus, advert, hid: "HIDService"):
         with contextlib.suppress(Exception):
             await trust_device(bus, dev_path)
         print(f"[hid] connected: {dev_path}")
+        
+        # Stop advertising while a client is connected (keeps things private)
+        with contextlib.suppress(Exception):
+            await advert.stop()
+        print("[hid] advertising stopped (connected)")
 
         # Wait for GATT discovery to finish
         await wait_until_services_resolved(bus, dev_path, timeout_s=30)

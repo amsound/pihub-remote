@@ -134,33 +134,9 @@ async def main():
         name="watch_activities"
     )
 
-    # ── 5) Command handler (uses dispatcher.hid so it works before/after BLE) ──
-    async def on_cmd(name: str, payload: bytes):
-        # Expect topics under: pihub/<room>/cmd/...
-        # e.g. atv/on  or  atv/off  (optional: {"ikd_ms": 400})
-        if name == "atv/on":
-            ikd = 400
-            try:
-                obj = json.loads((payload or b"").decode() or "{}")
-                ikd = int(obj.get("ikd_ms", ikd))
-            except Exception:
-                pass
-            asyncio.create_task(atv.atv_on(dispatcher.hid, ikd_ms=ikd))
-            print("[macros] queued atv/on")
-            return
-
-        if name == "atv/off":
-            ikd = 400
-            try:
-                obj = json.loads((payload or b"").decode() or "{}")
-                ikd = int(obj.get("ikd_ms", ikd))
-            except Exception:
-                pass
-            asyncio.create_task(atv.atv_off(dispatcher.hid, ikd_ms=ikd))
-            print("[macros] queued atv/off")
-            return
-
-        print(f"[macros] unknown cmd: {name}")
+    # ── 5) New Command handler ──
+    async def on_cmd(cmd: str):
+        await dispatcher.handle_text_command(cmd)
 
     # ── 6) MQTT bridge (early, so HA state arrives fast) ───────────────────────
     if not room_cfg.room:
@@ -177,7 +153,7 @@ async def main():
             input_select_entity=activity_obj_id,
         ),
         on_activity_state=lambda a: dispatcher.set_activity(a),
-        on_command=lambda name, payload: asyncio.create_task(on_cmd(name, payload)),
+        on_command=on_cmd,
     )
     #print(f"[mqtt] will subscribe → {room_cfg.prefix_bridge.rstrip('/')}/input_select/{activity_obj_id}/state")
     print(f"[mqtt] will subscribe → {mqtt.topic_activity_state}")

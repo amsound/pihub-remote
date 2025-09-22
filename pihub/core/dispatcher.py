@@ -4,7 +4,11 @@ import yaml
 from dataclasses import dataclass
 from typing import Callable, Dict, Any, Optional
 
-DEBUG_HID = True  # leave as-is if you already have it
+from pihub.macros import atv as macros_atv
+from pihub.macros import sys as macros_sys
+from pihub.macros import ble as macros_ble
+
+DEBUG_HID = True
 
 # -----------------
 # Activities model
@@ -103,6 +107,76 @@ class Dispatcher:
                 cb(name)
             except Exception as e:
                 print(f"[Dispatch] on_activity_change error: {e}")
+                
+                
+    async def handle_text_command(self, cmd: str) -> None:
+        """
+        Handle unified command payloads from MQTT: "<category>:<action>"
+        Examples: "macro:atv-on", "macro:atv-off"
+        - QoS1, non-retained (enforced by the MQTT publisher)
+        - Fire-and-forget: no acks returned
+        """
+        if not cmd:
+            print("[cmd] empty command")
+            return
+    
+        parts = cmd.split(":", 1)
+        if len(parts) != 2:
+            print(f"[cmd] bad format (expected 'cat:action'): {cmd!r}")
+            return
+    
+        cat, action = parts[0].strip().lower(), parts[1].strip().lower()
+    
+        # --------- category: macro (BLE key macros) ---------
+        if cat == "macro":
+            print(f"[cmd] recv {cat}:{action}")
+        
+            if action == "atv-on":
+                print("[cmd] running macro atv-on…")
+                await macros_atv.atv_on(self.hid, ikd_ms=400)
+                print("[macros] ran atv-on")
+                return
+        
+            if action == "atv-off":
+                print("[cmd] running macro atv-off…")
+                await macros_atv.atv_off(self.hid, ikd_ms=400)
+                print("[macros] ran atv-off")
+                return
+        
+            print(f"[cmd] unknown macro: {action!r}")
+            return
+    
+        # --------- category: sys (service/system controls) ---------
+        if cat == "sys":
+            print(f"[cmd] recv {cat}:{action}")
+        
+            if action == "restart-pihub":
+                print("[cmd] running sys restart-pihub…")
+                await macros_sys.restart_pihub()
+                print("[sys] pihub.service restart requested")
+                return
+        
+            if action == "reboot-pi":
+                print("[cmd] running sys reboot…")
+                await macros_sys.reboot_host()
+                print("[sys] host reboot requested")
+                return
+        
+            print(f"[cmd] unknown sys command: {action!r}")
+            return
+            
+        # --------- category: ble (Bluetooth maintenance) ---------
+        if cat == "ble":
+            print(f"[cmd] recv {cat}:{action}")
+        
+            if action == "unpair-all":
+                print("[cmd] running ble unpair-all…")
+                await macros_ble.unpair_all(adapter="hci0")
+                print("[ble] unpair-all done - recommend restart bluetooth service")
+                return
+        
+            print(f"[cmd] unknown ble command: {action!r}")
+            return
 
     
     async def handle(self, logical_name: str, edge: str):

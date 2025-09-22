@@ -61,12 +61,12 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         "model": "PiHub Remote Bridge",
         "sw_version": "paho-mqtt",
     }
-    state_topic = topics.status_json.topic
 
-    # Availability from JSON {state: "online"/"offline"}
+    # New split: availability string + JSON stats
+    state_topic_info = topics.status_info.topic   # JSON stats
+    # Availability: plain string "online"/"offline" on /status
     avail = {
-        "availability_topic": state_topic,
-        "availability_template": "{{ 'online' if value_json.state == 'online' else 'offline' }}",
+        "availability_topic": topics.status.topic,
         "payload_available": "online",
         "payload_not_available": "offline",
     }
@@ -82,12 +82,11 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         "name": "Online",
         "unique_id": f"pihub_{room}_online",
         "device_class": "connectivity",
-        "state_topic": state_topic,
-        "value_template": "{{ 'ON' if value_json.state | default('offline') == 'online' else 'OFF' }}",
-        "payload_on": "ON",
-        "payload_off": "OFF",
+        # State is driven directly by /status (plain 'online'/'offline')
+        "state_topic": topics.status.topic,
+        "payload_on": "online",
+        "payload_off": "offline",
         "icon": "mdi:check-network-outline",
-        **avail,
         "device": device,
     })
     
@@ -95,8 +94,8 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         "name": "Pi Undervoltage (Now)",
         "unique_id": f"pihub_{room}_pi_undervoltage_now",
         "device_class": "problem",
-        "state_topic": state_topic,
-        "value_template": "{{ 'ON' if value_json.attr.pi_undervolt | default(false) else 'OFF' }}",
+        "state_topic": state_topic_info,
+        "value_template": "{{ 'ON' if value_json.pi_undervolt | default(false) else 'OFF' }}",
         "payload_on": "ON",
         "payload_off": "OFF",
         "icon": "mdi:alert",
@@ -109,8 +108,8 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         "name": "Pi Undervoltage (Ever)",
         "unique_id": f"pihub_{room}_pi_undervoltage_ever",
         "device_class": "problem",
-        "state_topic": state_topic,
-        "value_template": "{{ 'ON' if value_json.attr.pi_undervolt_ever | default(false) else 'OFF' }}",
+        "state_topic": state_topic_info,
+        "value_template": "{{ 'ON' if value_json.pi_undervolt_ever | default(false) else 'OFF' }}",
         "payload_on": "ON",
         "payload_off": "OFF",
         "icon": "mdi:alert-circle-outline",
@@ -146,7 +145,7 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         cfg = {
             "name": name,
             "unique_id": f"pihub_{room}_{uid_suffix}",
-            "state_topic": state_topic,
+            "state_topic": state_topic_info,   # JSON stats topic
             "value_template": value_tpl,
             **avail,
             "device": device,
@@ -157,45 +156,45 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
 
     # Core sensors (with nicer icons and names)
     sensor("hostname", "Hostname",
-           "{{ value_json.attr.host | default('-') }}",
+           "{{ value_json.host | default('-') }}",
            {"icon": "mdi:server"})
     
     sensor("ip_addr", "IP Address",
-           "{{ value_json.attr.ip_addr | default('-') }}",
+           "{{ value_json.ip_addr | default('-') }}",
            {"icon": "mdi:ip-network"})
     
     sensor("uptime_human", "Uptime",
-           "{{ ((value_json.attr.uptime_s | default(0)) // 86400) | int }}d "
-           "{{ (((value_json.attr.uptime_s | default(0)) % 86400) // 3600) | int }}h",
+           "{{ ((value_json.uptime_s | default(0)) // 86400) | int }}d "
+           "{{ (((value_json.uptime_s | default(0)) % 86400) // 3600) | int }}h",
            {"icon": "mdi:calendar-clock", "entity_category": "diagnostic"})
     
     # Bluetooth
     sensor("bt_count", "BT Connected",
-           "{{ value_json.attr.bt_connected_count | default(0) }}",
+           "{{ value_json.bt_connected_count | default(0) }}",
            {"icon": "mdi:bluetooth", "state_class": "measurement", "entity_category": "diagnostic"})
     
     sensor("bt_macs", "BT Devices",
-           "{{ value_json.attr.bt_connected_macs | default('-', true) }}",
+           "{{ value_json.bt_connected_macs | default('-', true) }}",
            {"icon": "mdi:bluetooth-connect", "entity_category": "diagnostic"})
     
     # CPU / Temp / Disk / Memory
     sensor("cpu_load_pct", "CPU Load",
-           "{{ value_json.attr.cpu_load_pct | default(0) }}",
+           "{{ value_json.cpu_load_pct | default(0) }}",
            {"icon": "mdi:chip", "unit_of_measurement": "%", "state_class": "measurement",
             "entity_category": "diagnostic"})
     
     sensor("cpu_temp", "CPU Temp",
-           "{{ value_json.attr.cpu_temp_c | default(0) }}",
+           "{{ value_json.cpu_temp_c | default(0) }}",
            {"icon": "mdi:thermometer", "device_class": "temperature", "unit_of_measurement": "°C",
             "state_class": "measurement", "entity_category": "diagnostic"})
     
     sensor("disk_used_pct", "Disk Used",
-           "{{ value_json.attr.disk_used_pct | default(0) }}",
+           "{{ value_json.disk_used_pct | default(0) }}",
            {"icon": "mdi:harddisk", "unit_of_measurement": "%", "state_class": "measurement",
             "entity_category": "diagnostic"})
     
     sensor("mem_used_pct", "Memory Used",
-           "{{ value_json.attr.mem_used_pct | default(0) }}",
+           "{{ value_json.mem_used_pct | default(0) }}",
            {"icon": "mdi:memory", "unit_of_measurement": "%", "state_class": "measurement",
             "entity_category": "diagnostic"})
 
@@ -217,4 +216,5 @@ def publish_status(bridge: Any, topics: "Topics", *, online: bool, extra: Dict[s
         "state": "online" if online else "offline",
         "attr": attrs,
     }
-    bridge.publish_json(topics.status_json.topic, payload, qos=0, retain=False)
+    # stats/health snapshots go to /status/info (non-retained, QoS0)
+    bridge.publish_json(topics.status_info.topic, payload, qos=0, retain=False)

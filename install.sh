@@ -174,7 +174,6 @@ Restart=on-failure
 RestartSec=2
 
 TimeoutStopSec=20
-NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target

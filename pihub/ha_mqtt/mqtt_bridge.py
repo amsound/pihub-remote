@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import inspect
 import threading
-import os
 from dataclasses import dataclass
 from typing import Callable, Optional
 from contextlib import suppress
@@ -16,7 +14,7 @@ import paho.mqtt.client as mqtt
 # Use the modular helpers we built & tested
 from .mqtt_config import MqttConfig as CoreCfg  # internal config for topics/client_id
 from .mqtt_topics import build_topics
-from .mqtt_publishers import publish_discovery, publish_status, clear_retained_at_start
+from .mqtt_publishers import publish_discovery, clear_retained_at_start
 from .mqtt_stats_pi import get_stats
 
 
@@ -80,10 +78,10 @@ class MqttBridge:
         if self._core.username:
             self.client.username_pw_set(self._core.username, self._core.password)
 
-        # LWT: retained offline with empty attr (so HA templates never break)
+        # LWT: availability on /status (plain string, retained)
         self.client.will_set(
-            self._topics.status_json.topic,
-            payload=json.dumps({"state": "offline", "attr": {}}),
+            self._topics.status.topic,
+            payload="offline",
             qos=1,
             retain=True,
         )
@@ -91,7 +89,7 @@ class MqttBridge:
         # Tuning
         self.client.reconnect_delay_set(min_delay=1, max_delay=30)
         self.client.max_inflight_messages_set(40)
-        self.client.max_queued_messages_set(200)
+        self.client.max_queued_messages_set(50)
 
         # Callbacks
         self.client.on_connect = self._on_connect
@@ -111,11 +109,7 @@ class MqttBridge:
     async def start(self, activity_provider: Callable[[], str]) -> None:
         self._activity_provider = activity_provider
     
-        # CAPTURE THE LOOP FIRST (so callbacks can schedule coroutines safely)
-        self._loop = asyncio.get_running_loop()
-    
-        # Connect + loop in background thread
-        # capture the running loop first (so callbacks can schedule safely)
+        # Capture the app loop so callbacks can schedule coroutines safely
         self._loop = asyncio.get_running_loop()
         
         self.client.connect(self._core.host, self._core.port, self._core.keepalive)
@@ -136,8 +130,8 @@ class MqttBridge:
         try:
             if self.client.is_connected():
                 self.client.publish(
-                    self._topics.status_json.topic,
-                    json.dumps({"state": "offline", "attr": {}}),
+                    self._topics.status.topic,
+                    "offline",
                     qos=1,
                     retain=True,
                 )
@@ -162,14 +156,42 @@ class MqttBridge:
         }
         js = json.dumps(payload, separators=(",", ":"))
         print(f"[mqtt:tx] topic={self._topics.ha_service_call.topic} qos=1 retain=False payload={js}")
-        self.client.publish(self._topics.ha_service_call.topic, js, qos=1, retain=False)
+        self._try_publish_or_buffer(
+            self._topics.ha_service_call.topic,
+            js.encode(),
+            qos=1,
+            retain=False,
+            kind="ha_service",
+        )
     
     async def publish_activity_intent(self, activity: str) -> None:
         act = (activity or "").strip().lower()
         if not act:
             return
         print(f"[mqtt:tx] topic={self._topics.activity.topic} qos=1 retain=False payload={act}")
-        self.client.publish(self._topics.activity.topic, act.encode(), qos=1, retain=False)
+        self._try_publish_or_buffer(
+            self._topics.activity.topic,
+            act.encode(),
+            qos=1,
+            retain=False,
+            kind="activity",
+        )
+        
+    def _try_publish_or_buffer(self, topic: str, payload: bytes, *, qos: int, retain: bool, kind: str) -> None:
+        """
+        Simplest policy: if we're offline, DROP the message (no buffering).
+        Avoids stale floods and HA race conditions on reconnect.
+        """
+        if self.client.is_connected():
+            self.client.publish(topic, payload, qos=qos, retain=retain)
+            return
+    
+        # offline -> drop (but log)
+        try:
+            preview = payload.decode("utf-8", "replace")
+        except Exception:
+            preview = "<bytes>"
+        print(f"[mqtt:drop] offline {kind} discarded: topic={topic} qos={qos} payload={preview}")
 
     # -------------------------- internal helpers --------------------------
 
@@ -180,12 +202,12 @@ class MqttBridge:
             # Initial full status (after connect callback also fires one)
             await asyncio.sleep(0.1)
             stats = get_stats()
-            publish_status_bridge(self.client, self._topics.status_json.topic, stats)
+            publish_status_bridge(self.client, self._topics.status_info.topic, stats)
             # Heartbeat
             while not self._stopping.is_set():
                 await asyncio.sleep(interval)
                 stats = get_stats()
-                publish_status_bridge(self.client, self._topics.status_json.topic, stats)
+                publish_status_bridge(self.client, self._topics.status_info.topic, stats)
         except asyncio.CancelledError:
             return
 
@@ -196,13 +218,8 @@ class MqttBridge:
         session_present = bool(sp)
         print(f"[mqtt] connected; session_present={session_present}")
 
-        # ONLINE immediately (include empty attr)
-        client.publish(
-            self._topics.status_json.topic,
-            json.dumps({"state": "online", "attr": {}}),
-            qos=1,
-            retain=True,
-        )
+        # ONLINE immediately (plain string, retained)
+        client.publish(self._topics.status.topic, "online", qos=1, retain=True)
 
         # Always (re)subscribe so changes to topics take effect
         # Use the statestream topic *with* the _activity suffix from config
@@ -219,7 +236,7 @@ class MqttBridge:
         # Always (re)publish discovery (retained + idempotent), then push full status
         publish_discovery_bridge(client, self._topics, self._room)
         stats = get_stats()
-        publish_status_bridge(client, self._topics.status_json.topic, stats)
+        publish_status_bridge(client, self._topics.status_info.topic, stats)
 
     def _on_disconnect(self, client: mqtt.Client, userdata, rc, properties=None):
         if rc != 0:
@@ -238,11 +255,18 @@ class MqttBridge:
             self._call_handler(self.on_activity_state, s)
             return
     
-        # Command bus (HA → PiHub): pihub/<room>/cmd/<name>[/...]
-        cmd_prefix = self._topics.cmd_all.topic[:-2]  # strip trailing '/#'
-        if t.startswith(cmd_prefix):
-            name = t[len(cmd_prefix):].lstrip("/")
-            self._call_handler(self.on_command, name, p)
+        # Command bus (HA → PiHub): pihub/<room>/cmd with payload "category:action"
+        if t == self._topics.cmd_all.topic:
+            try:
+                cmd = (p or b"").decode("utf-8", "replace").strip()
+            except Exception:
+                cmd = ""
+            if cmd:
+                # on_command accepts a single string now (e.g. "macro:atv-on")
+                self._call_handler(self.on_command, cmd)
+            else:
+                print("[cmd] empty/invalid payload on command bus")
+            return
                     
                     
     def _call_handler(self, handler, *args) -> None:
@@ -288,9 +312,8 @@ class MqttBridge:
 
 # ---------------- inline bridges to avoid importing asyncio in publishers ----------------
 
-def publish_status_bridge(client: mqtt.Client, status_topic: str, stats_extra: dict) -> None:
-    payload = {"state": "online", "attr": stats_extra}
-    client.publish(status_topic, json.dumps(payload, separators=(",", ":")), qos=0, retain=False)
+def publish_status_bridge(client: mqtt.Client, status_info_topic: str, stats_extra: dict) -> None:
+    client.publish(status_info_topic, json.dumps(stats_extra, separators=(",", ":")), qos=0, retain=False)
 
 def publish_discovery_bridge(client: mqtt.Client, topics, room: str) -> None:
     # reuse the retained discovery we wrote in mqtt_publishers.py
@@ -315,8 +338,3 @@ def clear_retained_at_start_bridge(client: mqtt.Client, topics) -> None:
         client.publish(topics.ha_service_call.topic, b"", qos=1, retain=True)
     except Exception:
         pass
-
-# tiny contextlib.suppress clone (so we don’t import contextlib just for two calls)
-class contextlib_suppress:
-    def __enter__(self): return self
-    def __exit__(self, exc_type, exc, tb): return True
