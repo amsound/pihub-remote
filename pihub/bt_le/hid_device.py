@@ -100,8 +100,11 @@ def cc_payload_usage(usage_id: int) -> bytes:
     return bytes([usage_id & 0xFF, (usage_id >> 8) & 0xFF])
     
 #####
-async def _adv_unregister(bus, advert):
-    """Best-effort: prefer unregister (with or without bus); else stop()."""
+async def _adv_unregister(bus, advert) -> bool:
+    """
+    Unregister/stop advertising. Returns True if we likely did anything.
+    Only logs on error.
+    """
     try:
         if hasattr(advert, "unregister"):
             sig = inspect.signature(advert.unregister)
@@ -109,32 +112,39 @@ async def _adv_unregister(bus, advert):
                 await advert.unregister(bus)
             else:
                 await advert.unregister()
-            print("[hid] advertising unregistered")
-        elif hasattr(advert, "stop"):
+            return True
+        if hasattr(advert, "stop"):
             await advert.stop()
-            print("[hid] advertising stopped")
-        else:
-            print("[hid] no unregister/stop on advert (nothing to do)")
+            return True
+        return False
     except Exception as e:
         print(f"[hid] adv unregister error: {e!r}")
+        return False
 
-async def _adv_register_and_start(bus, advert):
-    """Best-effort: (re)register; if a start() exists, call it; otherwise done."""
+
+async def _adv_register_and_start(bus, advert) -> str:
+    """
+    (Re)register (+ start if supported). Returns a short mode label:
+    'registered+started', 'registered', or 'noop'. Only logs on error.
+    """
     try:
+        did_register = False
         if hasattr(advert, "register"):
             sig = inspect.signature(advert.register)
             if "bus" in sig.parameters:
                 await advert.register(bus)
             else:
                 await advert.register()
-        # Some advert impls have no start(); they begin advertising on register().
+            did_register = True
+
         if hasattr(advert, "start"):
             await advert.start()
-            print("[hid] advertising registered + started")
-        else:
-            print("[hid] advertising registered")
+            return "registered+started" if did_register else "started"
+
+        return "registered" if did_register else "noop"
     except Exception as e:
         print(f"[hid] adv register/start error: {e!r}")
+        return "error"
 #####
 
 # --------------------------
@@ -265,21 +275,22 @@ async def watch_link(bus, advert, hid: "HIDService"):
     
         # Fully remove the advertisement while connected
         with contextlib.suppress(Exception):
-            await asyncio.sleep(0.1)
-            await _adv_unregister(bus, advert)
-            print("[hid] advertising unregistered (connected device)")
+            await asyncio.sleep(0.1)  # optional grace
+            if await _adv_unregister(bus, advert):
+                print("[hid] advertising unregistered (connected device)")
         
-        # Block here until disconnect
+        # Block until disconnect
         await wait_for_disconnect(bus, dev_path)
         
         # Link gate OFF
         hid._link_ready = False
         print("[hid] disconnected")
         
-        # Re-register + start the advertisement for next client
+        # Re-register + start for next client
         with contextlib.suppress(Exception):
-            await _adv_register_and_start(bus, advert)
-            print("[hid] advertising restarted")
+            mode = await _adv_register_and_start(bus, advert)
+            if mode != "noop":
+                print(f"[hid] advertising {mode}")
 
 # --------------------------
 # GATT Services
@@ -567,13 +578,13 @@ async def start_hid(config, *, enable_console: bool = False) -> tuple[HidRuntime
 
             if _hid_service_singleton:
                 _hid_service_singleton._link_ready = True
-                print("[hid] link ready (services resolved)")
+                # print("[hid] link ready (services resolved)")
 
             await wait_for_disconnect(bus, dev_path)
 
             if _hid_service_singleton:
                 _hid_service_singleton._link_ready = False
-                print("[hid] link not ready (disconnected)")
+                # print("[hid] link not ready (disconnected)")
 
     link_task = asyncio.create_task(_watch_link(), name="hid_link_watch")
     
