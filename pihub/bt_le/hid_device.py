@@ -97,6 +97,30 @@ def kb_payload(keys=(), modifiers=0):
 def cc_payload_usage(usage_id: int) -> bytes:
     # 16-bit consumer usage in little-endian
     return bytes([usage_id & 0xFF, (usage_id >> 8) & 0xFF])
+    
+#####
+async def _adv_unregister(advert):
+    """Best-effort: prefer unregister(); fall back to stop()."""
+    try:
+        if hasattr(advert, "unregister"):
+            await advert.unregister()
+        else:
+            await advert.stop()
+    except Exception as e:
+        # Only log on error
+        print(f"[hid] adv unregister error: {e!r}")
+
+
+async def _adv_register_and_start(advert):
+    """Best-effort: (re)register then start; tolerate already-registered."""
+    try:
+        if hasattr(advert, "register"):
+            await advert.register()
+        await advert.start()
+    except Exception as e:
+        # Only log on error
+        print(f"[hid] adv register/start error: {e!r}")
+#####
 
 # --------------------------
 # BlueZ object manager helpers
@@ -211,36 +235,36 @@ async def watch_link(bus, advert, hid: "HIDService"):
         with contextlib.suppress(Exception):
             await trust_device(bus, dev_path)
         print(f"[hid] connected: {dev_path}")
-        
-        # Stop advertising while a client is connected (keeps things private)
-        with contextlib.suppress(Exception):
-            await advert.stop()
-        print("[hid] advertising stopped (connected)")
-
+    
         # Wait for GATT discovery to finish
         await wait_until_services_resolved(bus, dev_path, timeout_s=30)
-        await asyncio.sleep(0.8)  # give host time to write CCCDs
-
+        await asyncio.sleep(0.8)  # let the host write CCCDs
+    
         # Link gate ON
         hid._link_ready = True
-        # one snapshot so we can see what the host subscribed to
         try:
             kb, boot, cc = hid._notif_state()
             print(f"[hid] link ready (services resolved) — notify: kb={kb} boot={boot} cc={cc}")
         except Exception:
             print("[hid] link ready (services resolved)")
-
+    
+        # Fully remove the advertisement while connected
+        with contextlib.suppress(Exception):
+            await asyncio.sleep(0.1)  # tiny grace, optional
+            await _adv_unregister(advert)
+            print("[hid] advertising unregistered (connected device)")
+    
         # Block here until disconnect
         await wait_for_disconnect(bus, dev_path)
-
+    
         # Link gate OFF
         hid._link_ready = False
         print("[hid] disconnected")
-
-        # Re-advertise for the next client
+    
+        # Re-register + start the advertisement for next client
         with contextlib.suppress(Exception):
-            await advert.start()
-        print("[hid] advertising restarted")
+            await _adv_register_and_start(advert)
+            print("[hid] advertising restarted")
 
 # --------------------------
 # GATT Services
