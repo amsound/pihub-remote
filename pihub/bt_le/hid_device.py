@@ -6,6 +6,7 @@ import time
 import yaml
 import signal
 import contextlib
+import inspect
 
 from bluez_peripheral.util import get_message_bus, Adapter, is_bluez_available
 from bluez_peripheral.advert import Advertisement
@@ -99,24 +100,39 @@ def cc_payload_usage(usage_id: int) -> bytes:
     return bytes([usage_id & 0xFF, (usage_id >> 8) & 0xFF])
     
 #####
-async def _adv_unregister(advert):
-    """Best-effort: prefer unregister(); fall back to stop()."""
+async def _adv_unregister(bus, advert):
+    """Best-effort: prefer unregister (with or without bus); else stop()."""
     try:
         if hasattr(advert, "unregister"):
-            await advert.unregister()
-        else:
+            sig = inspect.signature(advert.unregister)
+            if "bus" in sig.parameters:
+                await advert.unregister(bus)
+            else:
+                await advert.unregister()
+            print("[hid] advertising unregistered")
+        elif hasattr(advert, "stop"):
             await advert.stop()
+            print("[hid] advertising stopped")
+        else:
+            print("[hid] no unregister/stop on advert (nothing to do)")
     except Exception as e:
         print(f"[hid] adv unregister error: {e!r}")
 
-
 async def _adv_register_and_start(bus, advert):
-    """Best-effort: (re)register then start; tolerate already-registered."""
+    """Best-effort: (re)register; if a start() exists, call it; otherwise done."""
     try:
-        # bluez_peripheral expects the dbus-fast connection here
         if hasattr(advert, "register"):
-            await advert.register(bus)
-        await advert.start()
+            sig = inspect.signature(advert.register)
+            if "bus" in sig.parameters:
+                await advert.register(bus)
+            else:
+                await advert.register()
+        # Some advert impls have no start(); they begin advertising on register().
+        if hasattr(advert, "start"):
+            await advert.start()
+            print("[hid] advertising registered + started")
+        else:
+            print("[hid] advertising registered")
     except Exception as e:
         print(f"[hid] adv register/start error: {e!r}")
 #####
@@ -249,8 +265,8 @@ async def watch_link(bus, advert, hid: "HIDService"):
     
         # Fully remove the advertisement while connected
         with contextlib.suppress(Exception):
-            await asyncio.sleep(0.1)  # tiny grace, optional
-            await _adv_unregister(advert)
+            await asyncio.sleep(0.1)
+            await _adv_unregister(bus, advert)
             print("[hid] advertising unregistered (connected device)")
         
         # Block here until disconnect
