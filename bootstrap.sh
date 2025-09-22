@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
 
 echo "[bootstrap] Updating APT and installing git + Python…"
 sudo apt update
