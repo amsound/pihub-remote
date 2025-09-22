@@ -9,11 +9,12 @@ from dbus_fast import BusType
 BLUEZ_SERVICE = "org.bluez"
 OBJ_MANAGER = "org.freedesktop.DBus.ObjectManager"
 ADAPTER_IFACE = "org.bluez.Adapter1"
+DEVICE_IFACE = "org.bluez.Device1"
 
 async def unpair_all(adapter: str = "hci0") -> None:
     """
     Remove all bonded devices under /org/bluez/<adapter>/dev_* using BlueZ Adapter1.RemoveDevice.
-    No advertising/pairable toggles here (your HID code handles re-advertising).
+    Only removes actual Device1 nodes (not their GATT children).
     """
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     try:
@@ -22,21 +23,21 @@ async def unpair_all(adapter: str = "hci0") -> None:
         root_proxy = bus.get_proxy_object(BLUEZ_SERVICE, "/", root_introspect)
         om = root_proxy.get_interface(OBJ_MANAGER)
 
-        # dbus-fast: use call_get_managed_objects()
+        # dbus-fast: call_get_managed_objects()
         objects = await om.call_get_managed_objects()
 
-        # Gather device paths for this adapter
+        # Gather ONLY Device1 nodes for this adapter (skip service/char/desc children)
         prefix = f"/org/bluez/{adapter}/dev_"
         dev_paths: List[str] = [
             path for path, ifaces in objects.items()
-            if path.startswith(prefix)
+            if path.startswith(prefix) and DEVICE_IFACE in ifaces
         ]
 
         if not dev_paths:
             print("[ble] no paired devices found")
             return
 
-        # Get Adapter1 interface for RemoveDevice
+        # Prepare adapter proxy once
         adapter_path = f"/org/bluez/{adapter}"
         adp_intro = await bus.introspect(BLUEZ_SERVICE, adapter_path)
         adp_proxy = bus.get_proxy_object(BLUEZ_SERVICE, adapter_path, adp_intro)
@@ -45,7 +46,19 @@ async def unpair_all(adapter: str = "hci0") -> None:
         removed = 0
         for path in dev_paths:
             try:
-                # dbus-fast: RemoveDevice -> call_remove_device(object_path)
+                # If still connected, request a disconnect first to speed things up
+                dev_intro = await bus.introspect(BLUEZ_SERVICE, path)
+                dev_proxy = bus.get_proxy_object(BLUEZ_SERVICE, path, dev_intro)
+                dev = dev_proxy.get_interface(DEVICE_IFACE)
+                try:
+                    props = await dev_proxy.get_interface("org.freedesktop.DBus.Properties").call_get_all(DEVICE_IFACE)
+                    if bool(props.get("Connected", False)):
+                        with asyncio.timeout(2.0):
+                            await dev.call_disconnect()
+                except Exception:
+                    pass  # best effort
+
+                # Remove the device (this clears the bond and will trigger disconnect if still up)
                 await adapter_if.call_remove_device(path)
                 print(f"[ble] removed paired device {path}")
                 removed += 1
@@ -55,9 +68,8 @@ async def unpair_all(adapter: str = "hci0") -> None:
         if removed == 0:
             print("[ble] no devices removed (errors above)")
     finally:
-        # dbus-fast .disconnect() is sync
+        # dbus-fast disconnect() is synchronous
         bus.disconnect()
 
-# Optional: allow `python -m pihub.macros.ble` to run it once (hci0)
 if __name__ == "__main__":
     asyncio.run(unpair_all("hci0"))
