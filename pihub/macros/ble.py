@@ -1,49 +1,39 @@
-# pihub/.../macros/ble.py
-from __future__ import annotations
-
+# pihub/macros/ble.py
+import asyncio
 from dbus_fast.aio import MessageBus
 from dbus_fast import BusType
 
-BLUEZ = "org.bluez"
-OM_IFACE = "org.freedesktop.DBus.ObjectManager"
+BLUEZ_SERVICE = "org.bluez"
 ADAPTER_IFACE = "org.bluez.Adapter1"
+DEVICE_IFACE = "org.bluez.Device1"
+OBJ_MANAGER = "org.freedesktop.DBus.ObjectManager"
 
-async def unpair_all(adapter: str = "hci0") -> int:
+
+async def unpair_all(adapter="hci0"):
     """
-    Remove all paired devices from the given adapter via BlueZ D-Bus.
-    Returns the number of devices removed.
+    Remove all bonded devices from the given adapter.
+    Mirrors `bluetoothctl remove *`.
     """
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    try:
-        root = await bus.introspect(BLUEZ, "/")
-        obj = bus.get_proxy_object(BLUEZ, "/", root)
-        om = obj.get_interface(OM_IFACE)
-        objects = await om.call_get_managed_objects()
+    obj = await bus.introspect(BLUEZ_SERVICE, "/")
+    mgr = bus.get_proxy_object(BLUEZ_SERVICE, "/", obj).get_interface(OBJ_MANAGER)
 
-        adapter_path = f"/org/bluez/{adapter}"
-        ad_xml = await bus.introspect(BLUEZ, adapter_path)
-        ad_obj = bus.get_proxy_object(BLUEZ, adapter_path, ad_xml)
-        adapter_iface = ad_obj.get_interface(ADAPTER_IFACE)
+    objects = await mgr.GetManagedObjects()
+    removed = False
 
-        removed = 0
-        for path, ifaces in list(objects.items()):
-            dev = ifaces.get("org.bluez.Device1")
-            if not dev:
-                continue
-            paired = dev.get("Paired")
-            if hasattr(paired, "value"):  # unwrap Variant if needed
-                paired = paired.value
-            if paired:
-                try:
-                    await adapter_iface.call_remove_device(path)
-                    removed += 1
-                    print(f"[ble] removed paired device {path}")
-                except Exception as e:
-                    print(f"[ble] failed to remove {path}: {e!r}")
-        return removed
-    finally:
-        # In your dbus-fast version, disconnect() is sync — don't await it.
-        try:
-            bus.disconnect()
-        except Exception:
-            pass
+    for path, ifaces in objects.items():
+        if DEVICE_IFACE in ifaces and path.startswith(f"/org/bluez/{adapter}/dev_"):
+            try:
+                dev_obj = await bus.introspect(BLUEZ_SERVICE, path)
+                dev_iface = bus.get_proxy_object(BLUEZ_SERVICE, path, dev_obj).get_interface(DEVICE_IFACE)
+                await dev_iface.Remove()
+                print(f"[ble] removed paired device {path}")
+                removed = True
+            except Exception as e:
+                print(f"[ble] failed to remove {path}: {e}")
+
+    # no await here — dbus-fast disconnect is sync
+    bus.disconnect()
+
+    if not removed:
+        print("[ble] no paired devices found")
