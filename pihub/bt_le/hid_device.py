@@ -107,18 +107,17 @@ async def _adv_unregister(advert):
         else:
             await advert.stop()
     except Exception as e:
-        # Only log on error
         print(f"[hid] adv unregister error: {e!r}")
 
 
-async def _adv_register_and_start(advert):
+async def _adv_register_and_start(bus, advert):
     """Best-effort: (re)register then start; tolerate already-registered."""
     try:
+        # bluez_peripheral expects the dbus-fast connection here
         if hasattr(advert, "register"):
-            await advert.register()
+            await advert.register(bus)
         await advert.start()
     except Exception as e:
-        # Only log on error
         print(f"[hid] adv register/start error: {e!r}")
 #####
 
@@ -253,17 +252,17 @@ async def watch_link(bus, advert, hid: "HIDService"):
             await asyncio.sleep(0.1)  # tiny grace, optional
             await _adv_unregister(advert)
             print("[hid] advertising unregistered (connected device)")
-    
+        
         # Block here until disconnect
         await wait_for_disconnect(bus, dev_path)
-    
+        
         # Link gate OFF
         hid._link_ready = False
         print("[hid] disconnected")
-    
+        
         # Re-register + start the advertisement for next client
         with contextlib.suppress(Exception):
-            await _adv_register_and_start(advert)
+            await _adv_register_and_start(bus, advert)
             print("[hid] advertising restarted")
 
 # --------------------------
