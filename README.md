@@ -63,59 +63,15 @@ sudo journalctl -u pihub -f
 
 
 ## MQTT Topics
-### Discovery / State
+### Pi → HA (TX)
 
-* **Activity intent (Pi → HA)**
+* **Activity intent**
 
   * Topic: `pihub/<room>/activity`
   * QoS: `1`
   * Retain: `false`
   * Payload: `"watch" | "listen" | "power_off"`
-
-* **Activity state (HA → Pi)**
-
-  * Topic: `pihub/input_select/<entity>/state`
-  * QoS: `1`
-  * Retain: `false`
-  * Payload: `string` (selected activity, e.g. `watch`)
-
-* **Availability (LWT)**
-
-  * Topic: `pihub/<room>/avail`
-  * QoS: `1`
-  * Retain: `true`
-  * Payload: `"online" | "offline"`
-
-* **Status / Stats (Pi → HA)**
-
-  * Topic: `pihub/<room>/status`
-  * QoS: `0`
-  * Retain: `false`
-  * Payload (JSON): runtime stats such as uptime, CPU, memory, BLE state.
-
----
-
-### Commands (HA → Pi)
-
-* **Command execution**
-
-  * Topic: `pihub/<room>/cmd`
-  * QoS: `1`
-  * Retain: `false`
-  * Payload format: `<category>:<action>`
-
-    * Examples:
-
-      * `macro:atv-on`
-      * `macro:atv-off`
-      * `sys:restart-pihub`
-      * `sys:reboot`
-      * `ble:unpair-all`
-
----
-
-### Service Calls (Pi → HA)
-
+  
 * **Home Assistant service call**
 
   * Topic: `pihub/<room>/ha_service`
@@ -130,6 +86,45 @@ sudo journalctl -u pihub -f
       "data": { "entity_id": "speakers" }
     }
     ```
+
+* **Status (LWT)**
+
+  * Topic: `pihub/<room>/status`
+  * QoS: `1`
+  * Retain: `true`
+  * Payload: `"online" | "offline"`
+
+* **HW Info**
+
+  * Topic: `pihub/<room>/status/info`
+  * QoS: `0`
+  * Retain: `false`
+  * Payload (JSON): runtime stats such as uptime, CPU, memory, BLE state.
+
+---
+
+### HA → Pi (RX)
+
+* **Command execution**
+
+  * Topic: `pihub/<room>/cmd`
+  * QoS: `1`
+  * Retain: `false`
+  * Payload format: `<category>:<action>`
+    * Currently working:
+      * `macro:atv-on`
+      * `macro:atv-off`
+      * `sys:restart-pihub`
+      * `sys:reboot`
+      * `ble:unpair-all`
+
+
+* **Activity state (HA → Pi)**
+
+  * Topic: `pihub/input_select/<room>_activity/state`
+  * QoS: `1`
+  * Retain: `false`
+  * Payload: `string` (selected activity, e.g. `watch`)
 
 ---
 
@@ -147,8 +142,8 @@ sudo journalctl -u pihub -f
 
 ### Summary
 
-* **Pi → HA**: `activity`, `avail`, `status`, `ha_service`
-* **HA → Pi**: `cmd`, `input_select/.../state`
+* **Pi → HA**: `activity`, `ha_service`, `status`, `info`
+* **HA → Pi**: `cmd`, `state`
 * Payloads are deliberately simple: strings for activity/commands, JSON for HA service calls.
 
 
