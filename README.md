@@ -61,61 +61,74 @@ sudo systemctl restart pihub
 sudo journalctl -u pihub -f
 ```
 
-## MQTT Topics (contract)
+## MQTT Topics
 
-PiHub exchanges MQTT messages with Home Assistant via the following topics.
+# -------------------------
+# RX (broker → PiHub)
+# -------------------------
+pihub/input_select/<room>_activity/state    # QoS 1, retained by HA statestream
+pihub/<room>/cmd                             # QoS 1, non-retained
+#   Payload examples (plain text):
+#     macro:atv-on
+#     macro:atv-off
+#     sys:restart-pihub
+#     sys:reboot
+#     ble:unpair-all
 
----
+# -------------------------
+# TX (PiHub → broker)
+# -------------------------
+<prefix_bridge>/activity                     # QoS 1, non-retained
+#   String payload of current activity intent (e.g. "watch"). Never retained.
+#   On fresh session, PiHub force-clears any accidental retained payload.
 
-#### RX (PiHub subscribes)
+<prefix_bridge>/ha/service/call              # QoS 1, non-retained
+#   JSON payload (one-shot Home Assistant service request), e.g.:
+#   {"domain":"media_player","service":"volume_up","data":{"entity_id":"speakers"}}
+#   On fresh session, PiHub force-clears any accidental retained payload.
 
-| Topic                                | Retained | QoS | Purpose                          |
-|--------------------------------------|----------|-----|----------------------------------|
-| `pihub/input_select/<room>_activity/state` | Yes      | 1   | Current activity from HA statestream |
-| `pihub/<room>/cmd/#`                 | No       | 1   | Arbitrary inbound commands from HA |
+<prefix_bridge>/status                       # QoS 1, RETAINED  (availability)
+#   "online" | "offline"
+#   - LWT publishes "offline" retained if PiHub dies
+#   - On connect, PiHub immediately publishes "online" retained
+#   - On graceful shutdown, PiHub publishes "offline" retained
 
----
+<prefix_bridge>/status/info                  # QoS 0, non-retained (stats)
+#   JSON snapshot (no "state" wrapper), published periodically:
+#   {
+#     "host":"PiHub-LivingRoom",
+#     "ip_addr":"192.168.70.231",
+#     "uptime_s":123456,
+#     "last_activity_cmd": null,
+#     "last_ha_service": null,
+#     "bt_connected_count":1,
+#     "bt_connected_macs":"AA:BB:CC:DD:EE:FF",
+#     "cpu_load_pct":3.4,
+#     "cpu_temp_c":52.1,
+#     "disk_used_pct":17.7,
+#     "mem_used_pct":18.6,
+#     "pi_undervolt":false,
+#     "pi_undervolt_ever":false
+#   }
 
-#### TX (PiHub publishes)
+# -------------------------
+# Home Assistant Discovery
+# -------------------------
+homeassistant/...                            # QoS 1, RETAINED (entity configs)
+# - All entities use availability_topic = <prefix_bridge>/status
+# - Two display sensors read TX topics directly:
+#     * Activity display      → <prefix_bridge>/activity         (string)
+#     * HA service display    → <prefix_bridge>/ha/service/call  (domain.service from JSON)
+# - Other diagnostic sensors (host/IP/uptime/CPU etc.) parse <prefix_bridge>/status/info
 
-| Topic                        | Retained | QoS | Purpose                          |
-|------------------------------|----------|-----|----------------------------------|
-| `pihub/<room>/activity`      | No       | 1   | Current activity intent (e.g. watch) |
-| `pihub/<room>/ha/service/call` | No    | 1   | Request HA service calls (JSON payload) |
-| `pihub/<room>/status/json`   | No      | 0   | Availability + status snapshot (online/offline + attrs) |
-
----
-
-#### Status Snapshot Payload
-
-Published on: `pihub/<room>/status/json`
-
-```json
-{
-  "state": "online",
-  "attr": {
-    "ts": 1694123456,
-    "host": "PiHub-LivingRoom",
-    "ip_addr": "192.168.70.23",
-    "uptime_s": 12345,
-    "cpu_temp_c": 44.5,
-    "cpu_load_pct": 3.2,
-    "mem_used_pct": 28.1,
-    "disk_used_pct": 11.4,
-    "bt_connected_count": 1,
-    "bt_connected_macs": ["AA:BB:CC:DD:EE:FF"],
-    "pi_undervoltage": false,
-    "pi_undervoltage_ever": false
-  }
-}
-```
-
----
-
-#### Home Assistant Discovery
-
-- Published under `homeassistant/...` (retained, QoS 1).  
-- Auto-creates a device `<Room Pretty> - PiHub` with diagnostic sensors (host, IP, uptime, BT, CPU, memory, disk, undervoltage).  
+# -------------------------
+# Notes
+# -------------------------
+# * <room> comes from room.yaml (e.g. living_room)
+# * <prefix_bridge> comes from room.yaml (e.g. pihub/living_room)
+# * TX is “fire-and-forget” while offline (no queue); commands are dropped if disconnected
+#   to avoid stale floods on reconnect.
+# * All command handling is strict one-way: no mirroring; RX and TX topics are discrete.
 
 ## Updating code
 
