@@ -18,7 +18,7 @@ chmod +x bootstrap.sh
 What this does:
 - Installs `git`, `python3`, `python3-venv`, `python3-pip`
 - Clones (or updates) `~/pihub-remote`
-- Runs `00-system-prep.sh` (turns **Bluetooth on**, disables **Wi-Fi** overlay, applies BlueZ tuning etc.)
+- Runs `00-system-prep.sh` (turns Bluetooth on, disables Wi-Fi overlay, applies BlueZ tuning etc.)
 - Runs `install.sh` (creates `.venv`, installs deps, creates `/home/pi/pihub-remote/pihub/config/room.yaml`, sets hostname `PiHub-<Room>`, enables `pihub.service`)
 
 After install, the service starts automatically and on boot.
@@ -115,7 +115,7 @@ sudo journalctl -u pihub -f
       * `macro:atv-on`
       * `macro:atv-off`
       * `sys:restart-pihub`
-      * `sys:reboot`
+      * `sys:reboot-pi`
       * `ble:unpair-all`
 
 
