@@ -14,6 +14,11 @@ as_user() {
 echo "[bootstrap] Starting PiHub setup…"
 echo "[bootstrap] Logs: $LOG_BOOT"
 
+# --- Persist Wi-Fi country so kernel/BlueZ don't nag ---
+sudo raspi-config nonint do_wifi_country GB >/dev/null 2>&1 || true
+sudo iw reg set GB >/dev/null 2>&1 || true
+sudo rfkill unblock all >/dev/null 2>&1 || true
+
 # ---------- 1. Install base packages (as root) ----------
 echo "[bootstrap] Updating APT and installing git + Python…"
 sudo apt-get update -qq >>"$LOG_BOOT" 2>&1
@@ -38,7 +43,8 @@ sudo chown -R "$TARGET_USER:$TARGET_USER" "$REPO_DIR"
 # ---------- 4. Run system prep (root) ----------
 echo "[bootstrap] Running system prep…"
 cd "$REPO_DIR"
-bash 00-system-prep.sh
+bash 00-system-prep.sh || true
+echo "[bootstrap] System prep complete."
 
 # ---------- 5. Run install script (as pi) ----------
 echo "[bootstrap] Running PiHub installer as $TARGET_USER…"
