@@ -12,7 +12,7 @@ It bridges a Logitech Unifying USB receiver with a button-only Harmony 'smart' r
 cd /home/pi
 wget https://raw.githubusercontent.com/amsound/pihub-remote/main/bootstrap.sh
 chmod +x bootstrap.sh
-./bootstrap.sh
+sudo ./bootstrap.sh
 ```
 
 What this does:

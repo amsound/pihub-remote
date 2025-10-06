@@ -65,43 +65,44 @@ if [ -f "$ROOM_YAML" ]; then
   _pass=$(sed -nE 's/^\s*password:\s*"?([^"]+)"?/\1/p' "$ROOM_YAML" | head -n1 || true)
 fi
 
-# ---------- prompts (cleaner, validated, sensible defaults) ----------
-# room
+# ---------- prompts (single-room input; clear UI) ----------
+echo
+echo "==== PiHub Room Setup ===="
+echo
+
+# Room (snake_case)
 while :; do
-  room=$(prompt "Room (snake_case, e.g. living_room)" "${_room:-living_room}")
+  room=$(prompt "Room Name in 'snake_case'" "${_room:-living_room}")
   if is_snake "$room"; then break; fi
   echo "  -> must be snake_case (letters/numbers + underscores)"
 done
 
-# Bluetooth device name suffix (CamelCase) — default derives from room
-room_title=$(printf "%s" "$room" | to_title)
-bt_suffix_default=$(printf "%s" "$room" | to_camel_suffix)
-suffix_in=$(prompt "Bluetooth device suffix (CamelCase, e.g. $bt_suffix_default)" "$bt_suffix_default")
-bt_suffix=$(printf "%s" "$suffix_in" | to_camel_suffix)
+# Derive CamelCase suffix and names
+bt_suffix=$(printf "%s" "$room" | to_camel_suffix)
 bt_name="PiHub-$bt_suffix"
-
-# MQTT
-mqtt_host=$(prompt "MQTT host" "${_host:-192.168.70.24}")
-mqtt_port=$(prompt "MQTT port" "${_port:-1883}")
-mqtt_user=$(prompt "MQTT username" "${_user:-remote}")
-mqtt_pass=$(prompt "MQTT password" "${_pass:-remote}")
-
-# Derived
-prefix_bridge="pihub/$room"
 hostname="PiHub-$bt_suffix"
+prefix_bridge="pihub/$room"
+
+# MQTT (with clear defaults shown)
+mqtt_host=$(prompt "MQTT Host" "${_host:-192.168.70.24}")
+mqtt_port=$(prompt "MQTT Port" "${_port:-1883}")
+mqtt_user=$(prompt "MQTT Username" "${_user:-remote}")
+mqtt_pass=$(prompt "MQTT Password" "${_pass:-remote}")
+
 
 # ---------- summary + confirmation ----------
 echo
-echo "[install] Summary:"
-printf "  %-14s %s\n" "room:" "$room"
-printf "  %-14s %s\n" "bt.device_name:" "$bt_name"
-printf "  %-14s %s\n" "mqtt.host:" "$mqtt_host"
-printf "  %-14s %s\n" "mqtt.port:" "$mqtt_port"
-printf "  %-14s %s\n" "mqtt.username:" "$mqtt_user"
-echo   "  mqtt.password:  (hidden)"
-printf "  %-14s %s\n" "prefix_bridge:" "$prefix_bridge"
-printf "  %-14s %s\n" "hostname:" "$hostname"
+echo "==== PiHub Room Setup ===="
 echo
+echo "Room Summary:"
+printf "  %-16s %s\n" "Room name:" "$room"
+printf "  %-16s %s\n" "Bluetooth & Hostname:" "$hostname"
+printf "  %-16s %s\n" "MQTT Host:" "$mqtt_host"
+printf "  %-16s %s\n" "MQTT Port:" "$mqtt_port"
+printf "  %-16s %s/%s\n" "MQTT Usr & pass:" "$mqtt_user" "$mqtt_pass"
+printf "  %-16s %s\n" "MQTT Prefix Bridge:" "$prefix_bridge"
+echo
+
 read -rp "Proceed with these settings? [Y/n]: " yn || true
 yn=${yn,,}
 if [ -n "$yn" ] && [ "$yn" != "y" ] && [ "$yn" != "yes" ]; then
@@ -182,19 +183,21 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now pihub >>"$LOG_INSTALL" 2>&1 || true
 echo "[install] pihub service enabled and started."
 
-# ---------- optional hostname change ----------
-read -rp "Set hostname to \"$hostname\" and reboot now? [Y/n]: " yn || true
-yn=${yn,,}
-if [ -z "$yn" ] || [ "$yn" = "y" ] || [ "$yn" = "yes" ]; then
-  echo "[install] Setting hostname to $hostname…"
-  sudo hostnamectl set-hostname "$hostname"
-  if ! grep -qE "127\.0\.1\.1\s+$hostname" /etc/hosts; then
-    echo "127.0.1.1 $hostname" | sudo tee -a /etc/hosts >/dev/null
-  fi
-  echo "[install] Rebooting…"
-  sudo reboot
+echo "[install] Setting hostname to $hostname…"
+echo "$hostname" | sudo tee /etc/hostname >/dev/null
+if grep -qE "^127\.0\.1\.1\s" /etc/hosts; then
+  sudo sed -i "s/^127\.0\.1\.1\s*.*/127.0.1.1\t$hostname/" /etc/hosts
 else
-  echo "[install] Skipping reboot."
+  echo "127.0.1.1 $hostname" | sudo tee -a /etc/hosts >/dev/null
 fi
+sudo hostnamectl set-hostname "$hostname"
 
-echo "[install] Logs: $LOG_INSTALL"
+echo
+echo "============================================================"
+echo "[install] Hostname set to '$hostname'."
+echo "[install] System will reboot automatically in 5 seconds..."
+echo "============================================================"
+echo
+sleep 5
+sudo reboot
+
