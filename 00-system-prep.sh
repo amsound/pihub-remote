@@ -3,33 +3,52 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 echo "[prep] Updating system packages…"
+# --- Suppress rfkill kernel warnings ---
+# set a valid regulatory domain so BlueZ doesn't whine
+sudo iw reg set GB >/dev/null 2>&1 || true
+# pre-unblock everything to prevent the "Wi-Fi is blocked" warning
+sudo rfkill unblock all >/dev/null 2>&1 || true
+
 sudo DEBIAN_FRONTEND=noninteractive \
-     apt-get -y \
+     apt-get -y -qq \
      -o Dpkg::Options::="--force-confdef" \
      -o Dpkg::Options::="--force-confold" \
-     full-upgrade
+     full-upgrade >> /var/log/pihub-bootstrap.log 2>&1
 
 echo "[prep] Disabling swap (dphys-swapfile)…"
-sudo systemctl disable --now dphys-swapfile 2>/dev/null || true
-sudo apt-get purge -y dphys-swapfile 2>/dev/null || true
-swapon --show || echo "[prep] Swap successfully disabled"
+sudo systemctl disable --now dphys-swapfile >> /var/log/pihub-bootstrap.log 2>&1 || true
+sudo apt-get purge -y -qq dphys-swapfile >> /var/log/pihub-bootstrap.log 2>&1 || true
 
 echo "[prep] Installing minimal deps…"
-sudo apt install -y git python3 python3-venv python3-pip \
-  bluez rfkill jq mosquitto-clients ltunify
+sudo apt-get install -y -qq git python3 python3-venv python3-pip \
+  bluez rfkill jq mosquitto-clients ltunify >> /var/log/pihub-bootstrap.log 2>&1
+
 
 # ----- Firmware config paths (Bookworm uses /boot/firmware) -----
-CFG="/boot/firmware/config.txt"
-[ -f /boot/config.txt ] && CFG="/boot/config.txt"
+if [ -f /boot/firmware/config.txt ]; then
+  CFG="/boot/firmware/config.txt"
+elif [ -f /boot/config.txt ]; then
+  CFG="/boot/config.txt"
+else
+  echo "[prep][WARN] Could not find config.txt, skipping Wi-Fi disable"
+  CFG=""
+fi
 
-echo "[prep] Disabling Wi-Fi overlay, ensuring BT enabled in $CFG…"
-sudo sed -i '/^\s*dtoverlay=disable-wifi\s*$/d' "$CFG"
-grep -q '^dtoverlay=disable-wifi' "$CFG" || echo 'dtoverlay=disable-wifi' | sudo tee -a "$CFG" >/dev/null
-sudo sed -i '/^\s*dtoverlay=disable-bt\s*$/d' "$CFG"  # ensure BT not disabled
+if [ -n "$CFG" ]; then
+  echo "[prep] Disabling Wi-Fi overlay, ensuring BT enabled in $CFG…"
+  sudo sed -i '/^\s*dtoverlay=disable-wifi\s*$/d' "$CFG"
+  grep -q '^dtoverlay=disable-wifi' "$CFG" || echo 'dtoverlay=disable-wifi' | sudo tee -a "$CFG" >/dev/null
+  sudo sed -i '/^\s*dtoverlay=disable-bt\s*$/d' "$CFG"  # ensure BT not disabled
+else
+  echo "[prep][WARN] Skipped firmware overlay edits (no config.txt found)"
+fi
 
-echo "[prep] rfkill: unblocking BT, blocking Wi-Fi…"
-sudo rfkill unblock bluetooth || true
-sudo rfkill block wifi || true
+echo "[prep] Disabling Wi-Fi user-space (wpa_supplicant)…"
+sudo systemctl disable --now wpa_supplicant >/dev/null 2>&1 || true
+sudo systemctl mask wpa_supplicant >/dev/null 2>&1 || true
+
+echo "[prep] Ensuring Bluetooth unblocked…"
+sudo rfkill unblock bluetooth >/dev/null 2>&1 || true
 
 echo "[prep] BlueZ override for daemon flags…"
 sudo mkdir -p /etc/systemd/system/bluetooth.service.d
@@ -38,9 +57,8 @@ sudo tee /etc/systemd/system/bluetooth.service.d/override.conf >/dev/null <<'EOF
 ExecStart=
 ExecStart=/usr/libexec/bluetooth/bluetoothd -E
 EOF
-sudo systemctl daemon-reload
-sudo systemctl enable bluetooth
-sudo systemctl restart bluetooth
+sudo systemctl daemon-reload >/dev/null 2>&1 || true
+sudo systemctl enable bluetooth >/dev/null 2>&1 || true
 
 echo "[prep] Ensuring BlueZ config keys in /etc/bluetooth/main.conf…"
 MC=/etc/bluetooth/main.conf
@@ -73,8 +91,7 @@ sudo sed -i "/^\[LE\]/a MinConnectionInterval = 12\nMaxConnectionInterval = 24\n
 sudo sed -i "/^\[LE\]/,/^\[/{/MinAdvertisementInterval/d;/MaxAdvertisementInterval/d}" "$MC"
 sudo sed -i "/^\[LE\]/a MinAdvertisementInterval = 100\nMaxAdvertisementInterval = 150" "$MC"
 
-sudo systemctl restart bluetooth
-echo "[prep] Done. Reboot recommended to fully apply Wi-Fi disable."
+echo "[prep] Done. Reboot or restart BlueZ required"
 
 echo "[prep] Verifying system state…"
 
@@ -83,27 +100,14 @@ if swapon --show | grep -q .; then
   echo "[prep][WARN] Swap still enabled:"
   swapon --show
 else
-  echo "[prep] Swap is disabled ✔"
+  echo "[prep] Swap is disabled!"
 fi
-
-# rfkill status
-echo "[prep] rfkill status:"
-rfkill list || true
-
 # Bluetooth service and daemon
 echo "[prep] bluetooth.service status: $(systemctl is-active bluetooth || true)"
-echo "[prep] bluetoothd path: $(command -v bluetoothd || echo 'not found')"
 
-# Versions/tools
-echo "[prep] BlueZ/ctl versions:"
-bluetoothctl -v || true
-btmgmt -h >/dev/null 2>&1 && echo "[prep] btmgmt available" || echo "[prep] btmgmt not found"
-ltunify --version || echo "[prep][WARN] ltunify not found (optional)"
-
-# Show the [LE] section we just wrote (including Min/MaxAdvertisementInterval)
-echo "[prep] /etc/bluetooth/main.conf [LE] section:"
-awk '/^\[LE\]/{print; f=1; next} /^\[/{f=0} f{print}' /etc/bluetooth/main.conf || true
-
-# Quick adapter summary (settings reflect after bluetooth restart)
-echo "[prep] btmgmt info (adapter capabilities/settings):"
-btmgmt info || true
+if command -v ltunify >/dev/null 2>&1; then
+  ver=$(ltunify --version 2>&1 | grep -Eo '[0-9]+\.[0-9]+' | head -n1)
+  echo "[prep] ltunify installed (v${ver:-unknown})"
+else
+  echo "[prep][WARN] ltunify not found (optional)"
+fi
