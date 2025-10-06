@@ -183,23 +183,17 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now pihub >>"$LOG_INSTALL" 2>&1 || true
 echo "[install] pihub service enabled and started."
 
+# ---------- Hostname ----------
 echo "[install] Setting hostname to $hostname…"
-
-if grep -qE "^127\.0\.1\.1\s" /etc/hosts; then
-  sudo sed -i "s/^127\.0\.1\.1\s*.*/127.0.1.1\t$hostname/" /etc/hosts
-else
-  echo "127.0.1.1 $hostname" | sudo tee -a /etc/hosts >/dev/null
-fi
-
-echo "$hostname" | sudo tee /etc/hostname >/dev/null
-
-sudo hostnamectl set-hostname "$hostname" >/dev/null 2>&1 || true
+sudo raspi-config nonint do_hostname "$hostname"
+echo "[install] Hostname set successfully to $hostname"
 
 # ---------- Cleanup ----------
 BOOTSTRAP_FILE="/home/pi/bootstrap.sh"
 if [ -f "$BOOTSTRAP_FILE" ]; then
   echo "[install] Cleaning up bootstrap file..."
   sudo rm -f "$BOOTSTRAP_FILE"
+  sync; sleep 0.2   # ensure message flushes before reboot
 fi
 
 echo
