@@ -18,5 +18,9 @@ dist/
 
 # Logs
 *.log
+
+# room config
 pihub/config/room.yaml
-pihub/config/room.yaml
+
+# bootstrap
+bootstrap.sh
