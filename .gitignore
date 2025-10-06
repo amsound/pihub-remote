@@ -21,6 +21,3 @@ dist/
 
 # room config
 pihub/config/room.yaml
-
-# bootstrap
-/bootstrap.sh
