@@ -195,6 +195,13 @@ echo "$hostname" | sudo tee /etc/hostname >/dev/null
 
 sudo hostnamectl set-hostname "$hostname" >/dev/null 2>&1 || true
 
+# ---------- Cleanup ----------
+BOOTSTRAP_FILE="/home/pi/bootstrap.sh"
+if [ -f "$BOOTSTRAP_FILE" ]; then
+  echo "[install] Cleaning up bootstrap file..."
+  sudo rm -f "$BOOTSTRAP_FILE"
+fi
+
 echo
 echo "============================================================"
 echo "[install] Hostname set to '$hostname'."
