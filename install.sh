@@ -2,10 +2,13 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
+sudo iw reg set GB >/dev/null 2>&1 || true
+sudo rfkill unblock all >/dev/null 2>&1 || true
+
 REPO_DIR="/home/pi/pihub-remote"
 CONF_DIR="$REPO_DIR/pihub/config"
 ROOM_YAML="$CONF_DIR/room.yaml"
-LOG_INSTALL=/var/log/pihub-install.log
+LOG_INSTALL="$REPO_DIR/install.log"
 
 # ---------- helpers ----------
 to_title() {  # "living_room" -> "Living Room"
@@ -13,14 +16,6 @@ to_title() {  # "living_room" -> "Living Room"
 import sys
 s=sys.stdin.read().strip().replace('_',' ')
 print(s.title())
-PY
-}
-to_camel_suffix() {  # "living_room" -> "LivingRoom"
-  python3 - <<'PY'
-import sys,re
-s=sys.stdin.read().strip()
-parts=re.split(r'[_\s]+', s)
-print(''.join(p[:1].upper()+p[1:] for p in parts if p))
 PY
 }
 is_snake() { [[ "$1" =~ ^[a-z0-9]+(_[a-z0-9]+)*$ ]]; }
@@ -77,30 +72,34 @@ while :; do
   echo "  -> must be snake_case (letters/numbers + underscores)"
 done
 
-# Derive CamelCase suffix and names
-bt_suffix=$(printf "%s" "$room" | to_camel_suffix)
+# Derive CamelCase suffix and names (inline conversion)
+bt_suffix=$(python3 -c "print(''.join(p.capitalize() for p in '${room}'.split('_') if p))")
+if [ -z "$bt_suffix" ]; then
+  echo "[install] ERROR: could not derive suffix from room '$room'" >&2
+  exit 1
+fi
+
 bt_name="PiHub-$bt_suffix"
 hostname="PiHub-$bt_suffix"
 prefix_bridge="pihub/$room"
 
 # MQTT (with clear defaults shown)
-mqtt_host=$(prompt "MQTT Host" "${_host:-192.168.70.24}")
-mqtt_port=$(prompt "MQTT Port" "${_port:-1883}")
-mqtt_user=$(prompt "MQTT Username" "${_user:-remote}")
-mqtt_pass=$(prompt "MQTT Password" "${_pass:-remote}")
-
+mqtt_host=$(prompt "MQTT Host, press enter for default" "${_host:-192.168.70.24}")
+mqtt_port=$(prompt "MQTT Port, press enter for default" "${_port:-1883}")
+mqtt_user=$(prompt "MQTT Username, press enter for default" "${_user:-remote}")
+mqtt_pass=$(prompt "MQTT Password, press enter for default" "${_pass:-remote}")
 
 # ---------- summary + confirmation ----------
 echo
 echo "==== PiHub Room Setup ===="
 echo
 echo "Room Summary:"
-printf "  %-16s %s\n" "Room name:" "$room"
-printf "  %-16s %s\n" "Bluetooth & Hostname:" "$hostname"
-printf "  %-16s %s\n" "MQTT Host:" "$mqtt_host"
-printf "  %-16s %s\n" "MQTT Port:" "$mqtt_port"
-printf "  %-16s %s/%s\n" "MQTT Usr & pass:" "$mqtt_user" "$mqtt_pass"
-printf "  %-16s %s\n" "MQTT Prefix Bridge:" "$prefix_bridge"
+printf "  %-22s %s\n" "Room name:" "$room"
+printf "  %-22s %s\n" "Bluetooth & Hostname:" "$hostname"
+printf "  %-22s %s\n" "MQTT Host:" "$mqtt_host"
+printf "  %-22s %s\n" "MQTT Port:" "$mqtt_port"
+printf "  %-22s %s/%s\n" "MQTT Usr & pass:" "$mqtt_user" "$mqtt_pass"
+printf "  %-22s %s\n" "MQTT Prefix Bridge:" "$prefix_bridge"
 echo
 
 read -rp "Proceed with these settings? [Y/n]: " yn || true
@@ -109,6 +108,7 @@ if [ -n "$yn" ] && [ "$yn" != "y" ] && [ "$yn" != "yes" ]; then
   echo "[install] Aborted."
   exit 1
 fi
+
 
 # ---------- write/update room.yaml ----------
 if [ -f "$ROOM_YAML" ]; then
@@ -184,13 +184,16 @@ sudo systemctl enable --now pihub >>"$LOG_INSTALL" 2>&1 || true
 echo "[install] pihub service enabled and started."
 
 echo "[install] Setting hostname to $hostname…"
-echo "$hostname" | sudo tee /etc/hostname >/dev/null
+
 if grep -qE "^127\.0\.1\.1\s" /etc/hosts; then
   sudo sed -i "s/^127\.0\.1\.1\s*.*/127.0.1.1\t$hostname/" /etc/hosts
 else
   echo "127.0.1.1 $hostname" | sudo tee -a /etc/hosts >/dev/null
 fi
-sudo hostnamectl set-hostname "$hostname"
+
+echo "$hostname" | sudo tee /etc/hostname >/dev/null
+
+sudo hostnamectl set-hostname "$hostname" >/dev/null 2>&1 || true
 
 echo
 echo "============================================================"
@@ -200,4 +203,3 @@ echo "============================================================"
 echo
 sleep 5
 sudo reboot
-
