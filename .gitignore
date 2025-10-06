@@ -23,4 +23,4 @@ dist/
 pihub/config/room.yaml
 
 # bootstrap
-bootstrap.sh
+/bootstrap.sh
