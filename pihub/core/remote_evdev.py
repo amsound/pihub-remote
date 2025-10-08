@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import contextlib
+import inspect
 from dataclasses import dataclass
 from typing import Callable, Optional, Dict
 
@@ -91,26 +92,29 @@ async def read_events_scancode(
                 log(f"[remote] input device connected ({rcfg.path})")
             was_connected = True
             # ────────────────────────────────────────────────────────────────────
-
+            
             last_msc: str | None = None
             backoff = max(0.2, float(retry_backoff))  # reset after success
-
+            
             async for ev in dev.async_read_loop():
                 if stop_event.is_set():
                     break
-
+            
+                # Track latest MSC (identity only; do not gate on it)
                 if ev.type == ecodes.EV_MSC and ev.code == ecodes.MSC_SCAN:
                     v = str(ev.value)
                     if debug_trace and v != last_msc:
                         log(f"[remote:trace] MSC_SCAN={v}")
                     last_msc = v
                     continue
-
+            
+                # Only act on key events
                 if ev.type != ecodes.EV_KEY:
                     if debug_trace:
                         log(f"[remote:trace] type={ev.type} code={ev.code} val={ev.value}")
                     continue
-
+            
+                # Edge
                 if ev.value == 1:
                     edge = "down"
                 elif ev.value == 0:
@@ -119,26 +123,48 @@ async def read_events_scancode(
                     if debug_trace:
                         log(f"[remote:trace] KEY repeat ignored (val=2)")
                     continue
-
-                if msc_only and not last_msc:
-                    if debug_trace:
-                        log("[remote:trace] KEY without prior MSC_SCAN (ignored)")
-                    continue
-
-                sc = last_msc or str(ev.code)
-                logical = rcfg.mapping.get(sc)
+            
+                # === NEW: prefer KEY_* fast path; fallback to MSC ===
+                logical = None
+            
+                # 1) KEY_* → logical (fast path) when not gating on MSC
+                key_name = ecodes.KEY[ev.code] if ev.code in ecodes.KEY else None
+                if not msc_only and key_name:
+                    logical = rcfg.mapping.get(key_name)
+            
+                # 2) MSC fallback (handles hex or decimal; YAML may store int or str)
+                if logical is None and last_msc:
+                    s = str(last_msc)
+                    msc_int = None
+                    try:
+                        # try hex first (e.g., 'c01ec'), then decimal
+                        msc_int = int(s, 16)
+                    except Exception:
+                        try:
+                            msc_int = int(s, 10)
+                        except Exception:
+                            msc_int = None
+            
+                    if msc_int is not None:
+                        logical = rcfg.mapping.get(msc_int) or rcfg.mapping.get(str(msc_int))
+                    if logical is None:
+                        # last resort: raw string key
+                        logical = rcfg.mapping.get(last_msc)
+            
+                # 3) Drop if still unmapped
                 if not logical:
                     if debug_unmapped:
-                        log(f"[remote] unmapped scan '{sc}' (edge={edge})")
+                        log(f"[remote] unmapped scan '{last_msc or ev.code}' (edge={edge})")
                     continue
-
+            
+                # 4) Dispatch (await if coroutine)
                 try:
                     res = on_button(logical, edge)
                     if asyncio.iscoroutine(res):
                         await res
                 except Exception as e:
                     log(f"[remote] on_button error for {logical}/{edge}: {e}")
-
+            
             # If we ever fall out of the loop, treat as disconnect
             raise OSError(errno.ENODEV, "device read loop ended")
 

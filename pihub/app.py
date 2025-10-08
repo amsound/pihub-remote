@@ -180,18 +180,18 @@ async def main():
 
     # ── 8) Remote reader (evdev) ──────────────────────────────────────────────
     rcfg = load_remote_config(str(REMOTE_KEYMAP_PATH))
-
+    
     async def on_button(name, edge):
         print(f"[remote] {name} {'press' if edge=='down' else 'release'}")
         await dispatcher.handle(name, edge)
-
+    
     stop_ev = asyncio.Event()
     remote_task = asyncio.create_task(
         read_events_scancode(
             rcfg,
             on_button,
             stop_event=stop_ev,
-            msc_only=True,
+            msc_only=False,
             debug_unmapped=False,
             debug_trace=False,
         ),
