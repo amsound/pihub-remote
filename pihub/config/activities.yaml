@@ -73,6 +73,7 @@ activities:
           service: turn_on
           data:
             entity_id: mute_script
+          when: down
 
       rem_dir_left:   [ { do: hid_consumer, name: menu_left } ]
       rem_dir_right:  [ { do: hid_consumer, name: menu_right } ]
@@ -170,6 +171,7 @@ activities:
           service: turn_on
           data:
             entity_id: mute_script
+          when: down
             
       rem_red:    { do: noop }
       rem_green:  { do: noop }
