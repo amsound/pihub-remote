@@ -27,6 +27,51 @@ HID_KEYMAP_PATH    = CONFIG_DIR / "hid_keymap.yaml"
 REMOTE_KEYMAP_PATH = CONFIG_DIR / "remote_keymap.yaml"
 ACTIVITIES_PATH    = CONFIG_DIR / "activities.yaml"
 
+# --- low-latency input→dispatch pipeline (top-level) ---
+import asyncio, time, inspect, os
+from typing import Tuple, Callable, Awaitable
+
+EVENT_QUEUE_MAX = 128
+evt_q: asyncio.Queue[Tuple[str, str, int]] = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
+
+# enqueue-only; never block the reader
+async def on_button(name: str, edge: str) -> None:
+    t_in = time.monotonic_ns()
+    try:
+        evt_q.put_nowait((name, edge, t_in))
+    except asyncio.QueueFull:
+        try:
+            _ = evt_q.get_nowait()
+            evt_q.task_done()
+        except asyncio.QueueEmpty:
+            pass
+        await evt_q.put((name, edge, t_in))
+
+DISPATCH_TIMEOUT_MS = 300
+LOG_EVERY = int(os.getenv("PIHUB_LOG_EVERY", "0"))  # 0 disables sampling
+
+# inject the handler (no global `dispatcher` here)
+async def ble_sender_worker(handle_fn: Callable[[str, str], Awaitable | None]) -> None:
+    count = 0
+    while True:
+        name, edge, t_in = await evt_q.get()
+        try:
+            res = handle_fn(name, edge)  # may be sync or async
+            if inspect.isawaitable(res):
+                await asyncio.wait_for(res, DISPATCH_TIMEOUT_MS / 1000)
+            if LOG_EVERY:
+                count += 1
+                if count % LOG_EVERY == 0:
+                    t_out = time.monotonic_ns()
+                    print(f"[lat] {name}/{edge}: {(t_out - t_in)/1000:.1f} µs")
+        except asyncio.TimeoutError:
+            print(f"[dispatch] timeout {name}/{edge} after {DISPATCH_TIMEOUT_MS} ms")
+        except Exception as e:
+            print(f"[dispatch] error {name}/{edge}: {e}")
+        finally:
+            evt_q.task_done()
+# --- end pipeline bits ---
+
 async def main():
     # ── 1) Room config ──────────────────────────────────────────────────────────
     room_cfg = load_room_config(CONFIG_DIR / "room.yaml")
@@ -181,17 +226,17 @@ async def main():
     # ── 8) Remote reader (evdev) ──────────────────────────────────────────────
     rcfg = load_remote_config(str(REMOTE_KEYMAP_PATH))
     
-    async def on_button(name, edge):
-        print(f"[remote] {name} {'press' if edge=='down' else 'release'}")
-        await dispatcher.handle(name, edge)
-    
     stop_ev = asyncio.Event()
+
+    asyncio.create_task(ble_sender_worker(dispatcher.handle), name="ble-sender")
+    
+    # start the evdev reader (non-blocking on on_button)
     remote_task = asyncio.create_task(
         read_events_scancode(
             rcfg,
-            on_button,
+            on_button,          # enqueues only; fast
             stop_event=stop_ev,
-            msc_only=False,
+            msc_only=False,     # keep KEY fast-path; MSC fallback for 9 codes
             debug_unmapped=False,
             debug_trace=False,
         ),

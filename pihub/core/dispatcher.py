@@ -8,7 +8,7 @@ from pihub.macros import atv as macros_atv
 from pihub.macros import sys as macros_sys
 from pihub.macros import ble as macros_ble
 
-DEBUG_HID = True
+DEBUG_HID = False
 
 # -----------------
 # Activities model
