@@ -258,6 +258,12 @@ async def main():
 
 if __name__ == "__main__":
     try:
+        import uvloop
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except Exception:
+        pass
+
+    try:
         asyncio.run(main())
     except KeyboardInterrupt:
         sys.exit(0)

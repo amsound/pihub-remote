@@ -3,3 +3,4 @@ dbus-fast==2.44.3
 evdev==1.9.2
 paho-mqtt==1.6.1
 PyYAML==6.0.2
+uvloop==0.21.0
