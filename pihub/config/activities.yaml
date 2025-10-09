@@ -171,7 +171,6 @@ activities:
           service: turn_on
           data:
             entity_id: mute_script
-          when: down
             
       rem_red:    { do: noop }
       rem_green:  { do: noop }

@@ -14,6 +14,7 @@ mapping:
   786933: rem_yellow
   786932: rem_blue
   786943: rem_info
+  786658: rem_mute
   KEY_LEFT: rem_dir_left
   KEY_RIGHT: rem_dir_right
   KEY_UP: rem_dir_up

@@ -38,7 +38,7 @@ async def read_events_scancode(
     stop_event: Optional[asyncio.Event] = None,
     retry_backoff: float = 1.0,
     *,
-    msc_only: bool = True,
+    msc_only: bool = False,
     debug_unmapped: bool = False,
     debug_trace: bool = False,
     on_disconnect: Optional[Callable[[], None]] = None,
