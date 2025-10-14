@@ -78,7 +78,7 @@ async def main():
 
     # ── 2) Load HID keymaps (initial) ──────────────────────────────────────────
     km = load_keymaps(str(HID_KEYMAP_PATH))
-    print(f"[Keymaps] Loaded: {len(km.keyboard)} kb, {len(km.consumer)} cc")
+    print(f"[app] keymaps loaded: {len(km.keyboard)} kb, {len(km.consumer)} cc")
 
     # Debounce state for keymaps
     def _km_digest(km_obj) -> str:
@@ -99,7 +99,7 @@ async def main():
             return
         km = new
         km_last = new_hash
-        print(f"[Keymaps] Reloaded: {len(km.keyboard)} Keyboard, {len(km.consumer)} Consumer")
+        print(f"[app] keymaps reloaded: {len(km.keyboard)} Keyboard, {len(km.consumer)} Consumer")
 
     def on_km_reload(new):
         nonlocal km_debounce_task
@@ -132,7 +132,7 @@ async def main():
         activities=Activities(default="null", activities={}),
     )
     dispatcher.set_activity("null")
-    print("[State] Activity set to null (waiting to receive state from HA)")
+    print("[app] activity set to null (waiting to receive state from HA)")
 
     # ── 4) Activities (seed + debounced hot reload) ────────────────────────────
     acts = load_activities(str(ACTIVITIES_PATH))
@@ -158,8 +158,8 @@ async def main():
         dispatcher.activities = new_acts
         acts_last = new_hash
         names2 = sorted(new_acts.activities.keys())
-        print(f"[Activities] Reloaded ({len(names2)} sections)")
-        print(f"[Dispatch] Activities updated: {names2}")
+        print(f"[app] {len(names2)} activities Reloaded")
+        print(f"[app] activities updated: {names2}")
 
     def on_acts_reload(new_acts):
         nonlocal acts_debounce_task, _skip_first_acts_reload
@@ -200,35 +200,34 @@ async def main():
         on_activity_state=lambda a: dispatcher.set_activity(a),
         on_command=on_cmd,
     )
-    #print(f"[mqtt] will subscribe → {room_cfg.prefix_bridge.rstrip('/')}/input_select/{activity_obj_id}/state")
-    print(f"[mqtt] will subscribe → {mqtt.topic_activity_state}")
     dispatcher.mqtt = mqtt
     dispatcher.on_activity_change = None
     asyncio.create_task(mqtt.start(lambda: dispatcher.activity), name="mqtt")
 
     # ── 7) Bring up BLE HID (optional), then attach to dispatcher ─────────────
-    #     (do it *after* MQTT so /cmd macros are available immediately)
-    shutdown = None  # set below for cleanup
+    shutdown = None  # will be set for cleanup
+    
     if room_cfg.bt_enabled:
         class MiniConfig:
             device_name = room_cfg.bt_device_name or room_cfg.device_name
             appearance  = 0x03C1  # keyboard
-
-        runtime, shutdown = await start_hid(MiniConfig(), enable_console=False)
+    
+        runtime, shutdown = await start_hid(MiniConfig())
+    
+        # Wire HID client into dispatcher
         hid = HIDClient(runtime.hid)
-        dispatcher.hid = hid  # <- attach real HID now
-        print(f"[BT] enabled (advertising as {MiniConfig.device_name})")
+        dispatcher.hid = hid
     else:
         async def shutdown():
-            pass
-        print("[BT] disabled via config; running without BLE HID")
+            pass  # no-op when BLE disabled
+        print("[app] Bluetooth disabled via config; running without BLE HID")
 
     # ── 8) Remote reader (evdev) ──────────────────────────────────────────────
     rcfg = load_remote_config(str(REMOTE_KEYMAP_PATH))
     
     stop_ev = asyncio.Event()
-
-    asyncio.create_task(ble_sender_worker(dispatcher.handle), name="ble-sender")
+    # Track ble-sender worker so we can cancel/await it on shutdown
+    ble_sender_task = asyncio.create_task(ble_sender_worker(dispatcher.handle), name="ble-sender")
     
     # start the evdev reader (non-blocking on on_button)
     remote_task = asyncio.create_task(
@@ -242,64 +241,49 @@ async def main():
         ),
         name="read_events",
     )
-    print("[App] Remote Reader started")
+    print("[app] remote reader started")
 
-    # ── 9) Apple TV (optional; last) ──────────────────────────────────────────
-    atv_service = None
-    pyatv_enabled = bool(getattr(room_cfg, "pyatv_enabled", False))
-    print(f"[pyatv] enabled={pyatv_enabled}")
-
-    def _publish_atv_state(state: dict):
-        print(f"[pyatv→mqtt] {state}")
-        topic = f"{room_cfg.prefix_bridge}/pyatv/state"
-        asyncio.create_task(mqtt.publish_json(topic, state))
-
-    if pyatv_enabled:
-        try:
-            from pihub.pyatv.atv_service import AppleTvService, PyAtvCreds
-            atv_service = AppleTvService(
-                PyAtvCreds(
-                    address   = room_cfg.pyatv_address,
-                    companion = room_cfg.pyatv_companion,
-                    airplay   = room_cfg.pyatv_airplay,
-                ),
-                on_state=_publish_atv_state,
-            )
-            asyncio.create_task(atv_service.start(), name="pyatv")
-            dispatcher.atv = atv_service
-        except ModuleNotFoundError as e:
-            print(f"[pyatv] disabled or missing dependency: {e}")
-    else:
-        # Explicitly note disabled state for clarity at startup
-        print("[pyatv] disabled by config")
-
-    # ── 10) Signals / lifecycle ───────────────────────────────────────────────
-    loop = asyncio.get_running_loop()
-    stop = loop.create_future()
-
-    def _request_stop():
-        if not stop.done():
-            stop.set_result(None)
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _request_stop)
-
-    print("[PiHub] Ready: BLE + Remote + Activities + MQTT.")
-    try:
-        await stop
-    finally:
-        # orderly teardown (MQTT first, then BLE)
+    # ── 9) Signals / lifecycle -───────────────────────────────────────────────
+    app_tasks = [t for t in (ble_sender_task, remote_task, km_task, acts_task, km_debounce_task, acts_debounce_task) if t]
+    
+    _shutting_down = False
+    async def shutdown_all() -> None:
+        nonlocal _shutting_down
+        if _shutting_down:
+            return
+        _shutting_down = True
+    
+        # Tell cooperative loops to exit
         stop_ev.set()
-        for t in (remote_task, km_task, acts_task, km_debounce_task, acts_debounce_task):
-            if t:
+    
+        # Cancel background tasks
+        for t in list(app_tasks):
+            if t and not t.done():
                 t.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await t
-        if atv_service:
-            await atv_service.stop()
-        await mqtt.shutdown()
-        await shutdown()
-        print("[PiHub] Clean shutdown.")
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.gather(*[t for t in app_tasks if t], return_exceptions=True)
+    
+        # Orderly teardown: MQTT first, then BLE HID stack
+        with contextlib.suppress(Exception):
+            await mqtt.shutdown()
+        with contextlib.suppress(Exception):
+            # 'shutdown' is the coroutine returned by start_hid(MiniConfig())
+            await shutdown()
+    
+        print("[app] clean shutdown")
+    
+    # Wire signals to schedule shutdown (non-blocking handler)
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGINT,  lambda: asyncio.create_task(shutdown_all()))
+    loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(shutdown_all()))
+    
+    print("[app] startup complete")
+    
+    # Keep running until a signal arrives (or you set stop_ev elsewhere)
+    try:
+        await stop_ev.wait()
+    finally:
+        await shutdown_all()
 
 if __name__ == "__main__":
     try:

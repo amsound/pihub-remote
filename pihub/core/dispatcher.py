@@ -9,6 +9,8 @@ from pihub.macros import sys as macros_sys
 from pihub.macros import ble as macros_ble
 
 DEBUG_HID = False
+DEBUG_HA = False
+DEBUG_INTENT = False
 
 # -----------------
 # Activities model
@@ -40,7 +42,7 @@ async def watch_activities(
             last = os.path.getmtime(path)
         except FileNotFoundError:
             last = None
-        print(f"[Activities] reloaded ({len(acts.activities)} sections)")
+        print(f"[dispatcher] {len(acts.activities)} activities reloaded")
     except FileNotFoundError:
         pass
 
@@ -51,7 +53,7 @@ async def watch_activities(
                 last = m
                 acts = load_activities(path)
                 on_reload(acts)
-                print(f"[Activities] reloaded ({len(acts.activities)} sections)")
+                print(f"[dispatcher] {len(acts.activities)} activities reloaded")
         except FileNotFoundError:
             pass
         await asyncio.sleep(poll)
@@ -91,7 +93,7 @@ class Dispatcher:
         else:
             # switch to default if current vanished
             self.set_activity(self.activities.default)
-        print(f"[Dispatch] activities updated: {list(self.activities.activities.keys())}")
+        print(f"[dispatcher] activities updated: {list(self.activities.activities.keys())}")
 
     def set_activity(self, name: str):
         name = (name or "").strip()
@@ -100,13 +102,13 @@ class Dispatcher:
         if getattr(self, "activity", None) == name:
             return  # no change
         self.activity = name
-        print(f"[Dispatch] activity → {name}")
+        print(f"[dispatcher] activity → {name}")
         cb = getattr(self, "on_activity_change", None)
         if cb:
             try:
                 cb(name)
             except Exception as e:
-                print(f"[Dispatch] on_activity_change error: {e}")
+                print(f"[dispatcher] on_activity_change error: {e}")
                 
                 
     async def handle_text_command(self, cmd: str) -> None:
@@ -286,7 +288,7 @@ class Dispatcher:
             if rep:
                 if edge == "down":
                     # fire once immediately (log it)
-                    print(f"[Dispatch→HA] {logical_name} {edge} -> {domain}.{service} {data}")
+                    if DEBUG_HA: print(f"[dispatch→HA] {logical_name} {edge} -> {domain}.{service} {data}")
                     await self.mqtt.publish_ha_service(domain, service, data)
                     # then start repeat timer (first repeat after initial_ms)
                     await self._start_repeat(
@@ -300,7 +302,7 @@ class Dispatcher:
                 # single fire; default to 'up' unless overridden
                 when = a.get("when", "up")
                 if when == "both" or (when == edge):
-                    print(f"[Dispatch→HA] {logical_name} {edge} -> {domain}.{service} {data}")
+                    if DEBUG_HA: print(f"[dispatch→HA] {logical_name} {edge} -> {domain}.{service} {data}")
                     await self.mqtt.publish_ha_service(domain, service, data)
             return
             
@@ -315,9 +317,9 @@ class Dispatcher:
             target = (a.get("to") or a.get("name") or "").lower()
             if target in ("watch", "listen", "power_off"):
                 await self.mqtt.publish_activity_intent(target)
-                print(f"[Dispatch→HA] intent → {target}")
+                if DEBUG_INTENT: print(f"[dispatch→HA] intent → {target}")
             else:
-                print(f"[Dispatch→HA] unknown activity intent: {target!r}")
+                if DEBUG_INTENT: print(f"[Dispatch→HA] unknown activity intent: {target!r}")
             return
         
         

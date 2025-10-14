@@ -17,6 +17,7 @@ from .mqtt_topics import build_topics
 from .mqtt_publishers import publish_discovery, clear_retained_at_start
 from .mqtt_stats_pi import get_stats
 
+DEBUG_MQTT = False
 
 @dataclass
 class MqttConfig:
@@ -155,7 +156,7 @@ class MqttBridge:
             "data": data or {},
         }
         js = json.dumps(payload, separators=(",", ":"))
-        print(f"[mqtt:tx] topic={self._topics.ha_service_call.topic} qos=1 retain=False payload={js}")
+        if DEBUG_MQTT: print(f"[mqtt:tx] topic={self._topics.ha_service_call.topic} qos=1 retain=False payload={js}")
         self._try_publish_or_buffer(
             self._topics.ha_service_call.topic,
             js.encode(),
@@ -168,7 +169,7 @@ class MqttBridge:
         act = (activity or "").strip().lower()
         if not act:
             return
-        print(f"[mqtt:tx] topic={self._topics.activity.topic} qos=1 retain=False payload={act}")
+        if DEBUG_MQTT: print(f"[mqtt:tx] topic={self._topics.activity.topic} qos=1 retain=False payload={act}")
         self._try_publish_or_buffer(
             self._topics.activity.topic,
             act.encode(),

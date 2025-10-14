@@ -83,16 +83,7 @@ activities:
       rem_exit:       [ { do: hid_consumer, name: menu } ]
       rem_menu:       [ { do: hid_consumer, name: ac_home } ]
       rem_back:       [ { do: hid_consumer, name: ac_home } ]
-
-#      rem_dir_left:   [ { do: atv, key: left,   cmd: tap } ]
-#      rem_dir_right:  [ { do: atv, key: right,  cmd: tap } ]
-#      rem_dir_up:     [ { do: atv, key: up,     cmd: tap } ]
-#      rem_dir_down:   [ { do: atv, key: down,   cmd: tap } ]
-#      rem_ok:         [ { do: atv, key: select, cmd: tap } ]
-#      rem_exit:       [ { do: atv, key: menu,   cmd: tap } ]
-#      rem_menu:       [ { do: atv, key: home,   cmd: tap } ]
-#      rem_back:       [ { do: atv, key: menu,   cmd: tap } ]
-
+      
       rem_rewind:     [ { do: hid_consumer, name: rewind } ]
       rem_play:       [ { do: hid_consumer, name: play_pause } ]
       rem_pause:      [ { do: hid_consumer, name: play_pause } ]

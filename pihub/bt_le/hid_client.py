@@ -1,138 +1,168 @@
+# pihub/bt_le/hid_client.py
+from __future__ import annotations
+
 import asyncio
 import contextlib
+from typing import Optional, Set, Iterable
 
-KEEPALIVE_MS = 20  # Time between repeated key reports
+
+# ---- Tunables --------------------------------------------------------------
+
+# Siri-like Consumer hold repeat cadence. 120–150 ms works well with 15ms/lat=4 links.
+CONSUMER_REPEAT_MS: int = 150
+
+# Tap timings (kept for convenience)
+CONSUMER_TAP_MS: int = 40
+KEYBOARD_TAP_MS: int = 40
+
+
+class HidDevice:
+    """BLE GATT backend contract (implemented elsewhere)."""
+    def send_keyboard(self, payload: bytes) -> None: ...
+    def send_consumer(self, payload: bytes) -> None: ...
+
 
 class HIDClient:
-    def __init__(self, hid_service):
-        self.hid = hid_service
+    """Edge-driven HID:
+       - Consumer (0x0C): steady reassert (DOWN) while held; UP on release.
+       - Keyboard (0x07): edges only; host handles typematic.
+    """
 
-        # keyboard state
-        self._kb_usage: int | None = None
+    def __init__(self, dev: HidDevice, max_keys: int = 6) -> None:
+        self.dev = dev
+        self.max_keys = max_keys
+
+        # Keyboard state
         self._kb_mods: int = 0
-        self._kb_task: asyncio.Task | None = None
+        self._kb_keys: Set[int] = set()
+        self._last_kb: Optional[bytes] = None
 
-        # consumer state
-        self._cc_usage: int | None = None
-        self._cc_task: asyncio.Task | None = None
+        # Consumer state
+        self._cc_usage: int = 0
+        self._last_cc: Optional[bytes] = None
+        self._cc_repeat_task: Optional[asyncio.Task] = None
 
-        # warn only once per run if host hasn't enabled notifications (CCCD off)
-        self._warned_keyboard = False
-        self._warned_consumer = False
+    # ---------------- Keyboard (edge-only; host repeats) --------------------
 
-    # ---------------- Keyboard (Report ID 1) ----------------
-    def _kb_payload(self, keys=(), modifiers=0, reserved=0) -> bytes:
-        k = list(keys)[:6] + [0] * (6 - len(keys))
-        return bytes([modifiers, reserved] + k)
+    async def key_down(self, code: int, modifiers: int = 0) -> None:
+        if len(self._kb_keys) < self.max_keys:
+            self._kb_keys.add(int(code))
+        self._kb_mods = modifiers & 0xFF
+        self._kb_send()
 
-    def _kb_apply(self) -> None:
-        keys = [self._kb_usage] if self._kb_usage else []
-        # Warn once only if HID says "not subscribed" (using the service helper)
-        if not self._warned_keyboard:
-            try:
-                if hasattr(self.hid, "_is_subscribed") and not self.hid._is_subscribed(self.hid.input_keyboard):
-                    summary = ""
-                    try:
-                        summary = f" → {self.hid._cccd_snapshot()}"  # optional
-                    except Exception:
-                        pass
-                    print(f"[hid] NOTE: keyboard not notifying (CCCD disabled){summary}")
-                    self._warned_keyboard = True
-            except Exception:
-                pass
-        self.hid.send_keyboard(self._kb_payload(keys, self._kb_mods))
-
-    async def _repeat_keyboard(self):
-        try:
-            while self._kb_usage is not None:
-                self._kb_apply()
-                await asyncio.sleep(KEEPALIVE_MS / 1000)
-        except asyncio.CancelledError:
-            pass
-
-    async def key_down(self, usage: int, modifiers: int = 0):
-        self._kb_usage = usage
-        self._kb_mods = modifiers
-        self._kb_apply()
-
-        if self._kb_task:
-            task = self._kb_task
-            self._kb_task = None
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        self._kb_task = asyncio.create_task(self._repeat_keyboard())
-
-    async def key_up(self):
-        if self._kb_task:
-            task = self._kb_task
-            self._kb_task = None
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-
-        self._kb_usage = None
-        self._kb_apply()
-
-    # ---------------- Consumer (Report ID 2) ----------------
-    def _cc_payload(self, usage: int) -> bytes:
-        return usage.to_bytes(2, "little")
-
-    def _cc_apply(self):
-        # Warn once only if HID says "not subscribed"
-        if not self._warned_consumer:
-            try:
-                if hasattr(self.hid, "_is_subscribed") and not self.hid._is_subscribed(self.hid.input_consumer):
-                    summary = ""
-                    try:
-                        summary = f" → {self.hid._cccd_snapshot()}"  # optional
-                    except Exception:
-                        pass
-                    print(f"[hid] NOTE: consumer not notifying (CCCD disabled){summary}")
-                    self._warned_consumer = True
-            except Exception:
-                pass
-
-        if self._cc_usage:
-            self.hid.send_consumer(self._cc_payload(self._cc_usage))
+    async def key_up(self, code: Optional[int] = None) -> None:
+        """Release a specific key, or all if code=None (matches your dispatcher)."""
+        if code is None:
+            if self._kb_keys:
+                self._kb_keys.clear()
+                self._kb_send()
         else:
-            # explicit neutral on release
-            self.hid.send_consumer(self._cc_payload(0))
+            self._kb_keys.discard(int(code))
+            self._kb_send()
 
-    async def _repeat_consumer(self):
+    async def key_tap(self, code: int, modifiers: int = 0, hold_ms: int = KEYBOARD_TAP_MS) -> None:
+        await self.key_down(code, modifiers)
+        await asyncio.sleep(max(0, hold_ms) / 1000)
+        await self.key_up(code)
+
+    # ---------------- Consumer (Siri-like steady repeat while held) ---------
+
+    async def consumer_down(self, usage: int) -> None:
+        """Send Consumer 'down' and start a steady repeat until released."""
+        self._cc_usage = int(usage) & 0xFFFF
+        self._cc_send()
+        await self._start_cc_repeat()
+
+    async def consumer_up(self) -> None:
+        """Send Consumer 'up' and stop repeat."""
+        await self._stop_cc_repeat()
+        self._cc_usage = 0
+        self._cc_send()
+
+    async def consumer_tap(self, usage: int, hold_ms: int = CONSUMER_TAP_MS) -> None:
+        await self.consumer_down(usage)
+        await asyncio.sleep(max(0, hold_ms) / 1000)
+        await self.consumer_up()
+
+    # ---------------- Builders & senders ------------------------------------
+
+    def _kb_build(self) -> bytes:
+        mods = self._kb_mods
+        keys: Iterable[int] = list(self._kb_keys)[: self.max_keys]
+        buf = bytearray(2 + self.max_keys)
+        buf[0] = mods
+        buf[1] = 0x00
+        for i, code in enumerate(keys):
+            buf[2 + i] = code & 0xFF
+        return bytes(buf)
+
+    def _kb_send(self) -> None:
+        payload = self._kb_build()
+        if payload == self._last_kb:
+            return
+        self._last_kb = payload
         try:
-            while self._cc_usage is not None:
-                self._cc_apply()
-                await asyncio.sleep(KEEPALIVE_MS / 1000)
-        except asyncio.CancelledError:
+            self.dev.send_keyboard(payload)
+        except Exception:
+            # hot path: stay silent
             pass
 
-    async def consumer_down(self, usage: int):
-        self._cc_usage = usage
-        self._cc_apply()
+    def _cc_build(self) -> bytes:
+        u = self._cc_usage
+        return bytes((u & 0xFF, (u >> 8) & 0xFF))
 
-        if self._cc_task:
-            task = self._cc_task
-            self._cc_task = None
+    def _cc_send(self) -> None:
+        payload = self._cc_build()
+        if payload == self._last_cc:
+            return
+        self._last_cc = payload
+        try:
+            self.dev.send_consumer(payload)
+        except Exception:
+            pass
+
+    # ---------------- Repeat loop (Consumer only) ---------------------------
+
+    async def _start_cc_repeat(self) -> None:
+        await self._stop_cc_repeat()
+        interval = max(60, CONSUMER_REPEAT_MS) / 1000.0
+
+        async def loop():
+            import time
+            try:
+                # Delay first tick so we don't duplicate the initial DOWN
+                next_at = time.monotonic() + interval
+                while self._cc_usage:
+                    now = time.monotonic()
+                    delay = next_at - now
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    # Force a notify each tick with the same DOWN payload
+                    payload = bytes((self._cc_usage & 0xFF, (self._cc_usage >> 8) & 0xFF))
+                    try:
+                        self.dev.send_consumer(payload)
+                    except Exception:
+                        pass
+                    next_at += interval
+            except asyncio.CancelledError:
+                pass
+
+        self._cc_repeat_task = asyncio.create_task(loop(), name="hid:cc_repeat")
+
+    async def _stop_cc_repeat(self) -> None:
+        task = self._cc_repeat_task
+        if task:
+            self._cc_repeat_task = None
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        self._cc_task = asyncio.create_task(self._repeat_consumer())
 
-    async def consumer_up(self):
-        if self._cc_task:
-            task = self._cc_task
-            self._cc_task = None
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+    # ---------------- Cleanup ------------------------------------------------
 
-        self._cc_usage = None
-        self._cc_apply()
-        
-        
-    async def consumer_tap(self, usage: int, hold_ms: int = 60):
-        """Press and release a consumer control key with a hold duration."""
-        await self.consumer_down(usage)
-        await asyncio.sleep(hold_ms / 1000)
-        await self.consumer_up()
+    async def close(self) -> None:
+        await self._stop_cc_repeat()
+        self._kb_keys.clear()
+        self._kb_mods = 0
+        self._last_kb = None
+        self._cc_usage = 0
+        self._last_cc = None

@@ -89,7 +89,7 @@ async def read_events_scancode(
 
             # ── breadcrumb: connected once ───────────────────────────────────────
             if not was_connected:
-                log(f"[remote] input device connected ({rcfg.path})")
+                log(f"[remote] usb receiver connected ({rcfg.path})")
             was_connected = True
             # ────────────────────────────────────────────────────────────────────
             
@@ -174,7 +174,7 @@ async def read_events_scancode(
                     on_disconnect()
             # ── breadcrumb: disconnected ────────────────────────────────────────
             if was_connected:
-                log("[remote] input device disconnected; reopening…")
+                log("[remote] usb receiver disconnected; reopening…")
             was_connected = False
             # ────────────────────────────────────────────────────────────────────
             if debug_trace:
@@ -189,7 +189,7 @@ async def read_events_scancode(
                     on_disconnect()
             # ── breadcrumb: disconnected ────────────────────────────────────────
             if was_connected:
-                log("[remote] input device disconnected; reopening…")
+                log("[remote] usb receiver disconnected; reopening…")
             was_connected = False
             # ────────────────────────────────────────────────────────────────────
             if debug_trace:
