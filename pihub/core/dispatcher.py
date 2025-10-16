@@ -136,13 +136,13 @@ class Dispatcher:
             if action == "atv-on":
                 print("[cmd] running macro atv-on…")
                 await macros_atv.atv_on(self.hid, ikd_ms=400)
-                print("[macros] ran atv-on")
+                # print("[macros] ran atv-on")
                 return
         
             if action == "atv-off":
                 print("[cmd] running macro atv-off…")
                 await macros_atv.atv_off(self.hid, ikd_ms=400)
-                print("[macros] ran atv-off")
+                # print("[macros] ran atv-off")
                 return
         
             print(f"[cmd] unknown macro: {action!r}")
@@ -155,13 +155,13 @@ class Dispatcher:
             if action == "restart-pihub":
                 print("[cmd] running sys restart-pihub…")
                 await macros_sys.restart_pihub()
-                print("[sys] pihub.service restart requested")
+                # print("[sys] pihub.service restart requested")
                 return
         
             if action == "reboot-pi":
-                print("[cmd] running sys reboot…")
+                print("[cmd] running sys reboot")
                 await macros_sys.reboot_host()
-                print("[sys] host reboot requested")
+                # print("[sys] host reboot requested")
                 return
         
             print(f"[cmd] unknown sys command: {action!r}")
@@ -172,9 +172,9 @@ class Dispatcher:
             print(f"[cmd] recv {cat}:{action}")
         
             if action == "unpair-all":
-                print("[cmd] running ble unpair-all…")
+                print("[cmd] running ble unpair-all")
                 await macros_ble.unpair_all(adapter="hci0")
-                print("[ble] unpair-all done - recommend restart bluetooth service")
+                # print("[ble] unpair-all done - recommend restart bluetooth service")
                 return
         
             print(f"[cmd] unknown ble command: {action!r}")
