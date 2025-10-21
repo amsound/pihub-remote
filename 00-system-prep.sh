@@ -56,6 +56,13 @@ sudo tee /etc/systemd/system/bluetooth.service.d/override.conf >/dev/null <<'EOF
 [Service]
 ExecStart=
 ExecStart=/usr/libexec/bluetooth/bluetoothd -E
+# Runtime priority for BT daemon (lower latency)
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=20
+CPUAffinity=2
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
 EOF
 sudo systemctl daemon-reload >/dev/null 2>&1 || true
 sudo systemctl enable bluetooth >/dev/null 2>&1 || true
@@ -84,9 +91,7 @@ ensure_section General
 ensure_section LE
 # General
 sudo sed -i "/^\[General\]/,/^\[/{/ControllerMode/d;/FastConnectable/d;/Privacy/d;/JustWorksRepairing/d}" "$MC"
-sudo sed -i "/^\[LE\]/,/^\[/{/MinConnectionInterval/d;/MaxConnectionInterval/d;/ConnectionLatency/d;/ConnectionSupervisionTimeout/d}" "$MC"
 sudo sed -i "/^\[General\]/a ControllerMode = le\nFastConnectable = true\nPrivacy = off\nJustWorksRepairing = always" "$MC"
-sudo sed -i "/^\[LE\]/a MinConnectionInterval = 12\nMaxConnectionInterval = 24\nConnectionLatency = 0\nConnectionSupervisionTimeout = 200" "$MC"
 # Tune LE advertising interval (fast discovery, tight window)
 sudo sed -i "/^\[LE\]/,/^\[/{/MinAdvertisementInterval/d;/MaxAdvertisementInterval/d}" "$MC"
 sudo sed -i "/^\[LE\]/a MinAdvertisementInterval = 100\nMaxAdvertisementInterval = 150" "$MC"

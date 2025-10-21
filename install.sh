@@ -49,11 +49,10 @@ pip install -q -r requirements.txt >>"$LOG_INSTALL" 2>&1
 mkdir -p "$CONF_DIR"
 
 # ---------- load current values (if any) ----------
-_room=""; _btname=""; _host=""; _port=""; _user=""; _pass=""
+_room=""; _host=""; _port=""; _user=""; _pass=""
 if [ -f "$ROOM_YAML" ]; then
   echo "[install] Found existing $ROOM_YAML, will pre-fill from it."
   _room=$(sed -nE 's/^room:\s*"?([^"]+)"?/\1/p' "$ROOM_YAML" | head -n1 || true)
-  _btname=$(sed -nE 's/^\s*device_name:\s*"?([^"]+)"?/\1/p' "$ROOM_YAML" | head -n1 || true)
   _host=$(sed -nE 's/^\s*host:\s*"?([^"]+)"?/\1/p' "$ROOM_YAML"   | head -n1 || true)
   _port=$(sed -nE 's/^\s*port:\s*([0-9]+)/\1/p' "$ROOM_YAML"     | head -n1 || true)
   _user=$(sed -nE 's/^\s*username:\s*"?([^"]+)"?/\1/p' "$ROOM_YAML" | head -n1 || true)
@@ -72,15 +71,6 @@ while :; do
   echo "  -> must be snake_case (letters/numbers + underscores)"
 done
 
-# Derive CamelCase suffix and names (inline conversion)
-bt_suffix=$(python3 -c "print(''.join(p.capitalize() for p in '${room}'.split('_') if p))")
-if [ -z "$bt_suffix" ]; then
-  echo "[install] ERROR: could not derive suffix from room '$room'" >&2
-  exit 1
-fi
-
-bt_name="PiHub-$bt_suffix"
-hostname="PiHub-$bt_suffix"
 prefix_bridge="pihub/$room"
 
 # MQTT (with clear defaults shown)
@@ -95,7 +85,7 @@ echo "==== PiHub Room Setup ===="
 echo
 echo "Room Summary:"
 printf "  %-22s %s\n" "Room name:" "$room"
-printf "  %-22s %s\n" "Bluetooth & Hostname:" "$hostname"
+printf "  %-22s %s\n" "Hostname:" "$hostname"
 printf "  %-22s %s\n" "MQTT Host:" "$mqtt_host"
 printf "  %-22s %s\n" "MQTT Port:" "$mqtt_port"
 printf "  %-22s %s/%s\n" "MQTT Usr & pass:" "$mqtt_user" "$mqtt_pass"
@@ -114,30 +104,46 @@ fi
 if [ -f "$ROOM_YAML" ]; then
   echo "[install] Updating existing room.yaml fields…"
   tmp="$ROOM_YAML.tmp.$$"
-  awk -v room="$room" -v btname="$bt_name" -v host="$mqtt_host" -v port="$mqtt_port" \
+  awk -v room="$room" -v host="$mqtt_host" -v port="$mqtt_port" \
       -v user="$mqtt_user" -v pass="$mqtt_pass" -v pfx="$prefix_bridge" '
-    BEGIN{ in_bt=0; in_mqtt=0 }
+    BEGIN{ in_mqtt=0; in_bt=0; saw_bt=0 }
     {
+      # room
       if ($0 ~ /^room:/) { print "room: \"" room "\""; next }
-      if ($0 ~ /^bt:/)   { in_bt=1; in_mqtt=0; print; next }
-      if ($0 ~ /^mqtt:/) { in_mqtt=1; in_bt=0; print; next }
-      if (in_bt && $0 ~ /^\s*device_name:/)         { print "  device_name: \"" btname "\""; next }
-      if (in_mqtt && $0 ~ /^\s*host:/)              { print "  host: \"" host "\""; next }
-      if (in_mqtt && $0 ~ /^\s*port:/)              { print "  port: " port; next }
-      if (in_mqtt && $0 ~ /^\s*prefix_bridge:/)     { print "  prefix_bridge: \"" pfx "\""; next }
-      if (in_mqtt && $0 ~ /^\s*username:/)          { print "  username: \"" user "\""; next }
-      if (in_mqtt && $0 ~ /^\s*password:/)          { print "  password: \"" pass "\""; next }
+
+      # bt
+      if ($0 ~ /^bt:/)   { in_bt=1; saw_bt=1; print "bt:"; next }
+      if (in_bt && $0 ~ /^\s*enabled:/)     { print "  enabled: true"; next }
+      if (in_bt && $0 ~ /^\s*device_name:/) { print "  device_name: \"PiHub Remote\""; next }
+      if ($0 ~ /^[^[:space:]]/) { in_bt=0 }
+
+      # mqtt
+      if ($0 ~ /^mqtt:/) { in_mqtt=1; print; next }
+      if (in_mqtt && $0 ~ /^\s*host:/)          { print "  host: \"" host "\""; next }
+      if (in_mqtt && $0 ~ /^\s*port:/)          { print "  port: " port; next }
+      if (in_mqtt && $0 ~ /^\s*prefix_bridge:/) { print "  prefix_bridge: \"" pfx "\""; next }
+      if (in_mqtt && $0 ~ /^\s*username:/)      { print "  username: \"" user "\""; next }
+      if (in_mqtt && $0 ~ /^\s*password:/)      { print "  password: \"" pass "\""; next }
+      if ($0 ~ /^[^[:space:]]/) { in_mqtt=0 }
+
       print
+    }
+    END {
+      if (!saw_bt) {
+        print "bt:";
+        print "  enabled: true";
+        print "  device_name: \"PiHub Remote\"";
+      }
     }' "$ROOM_YAML" >"$tmp"
   mv "$tmp" "$ROOM_YAML"
 else
   echo "[install] Creating new room.yaml…"
-  cat >"$ROOM_YAML" <<EOF
+  cat >"$ROOM_YAML" <<'YAML'
 room: "$room"
 
 bt:
   enabled: true
-  device_name: "$bt_name"
+  device_name: "PiHub Remote"
 
 mqtt:
   host: "$mqtt_host"
@@ -145,14 +151,12 @@ mqtt:
   prefix_bridge: "$prefix_bridge"
   username: "$mqtt_user"
   password: "$mqtt_pass"
-
-pyatv:
-  enabled: false
-EOF
+YAML
 fi
 
 echo "[install] room.yaml written at $ROOM_YAML"
 echo
+
 
 # ---------- systemd service ----------
 echo "[install] Installing systemd service pihub…"
@@ -175,6 +179,13 @@ Restart=on-failure
 RestartSec=2
 TimeoutStopSec=20
 
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=30
+CPUAffinity=2
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -185,6 +196,8 @@ echo "[install] pihub service enabled and started."
 
 # ---------- Hostname ----------
 echo "[install] Setting hostname to $hostname…"
+# Derive hostname from 'room' (snake_case -> kebab-case) with '-pihub' suffix
+hostname="$(printf "%s" "$room" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_]+/_/g; s/_+/-/g')-pihub"
 sudo raspi-config nonint do_hostname "$hostname"
 echo "[install] Hostname set successfully to $hostname"
 
