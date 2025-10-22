@@ -174,11 +174,10 @@ sudo systemctl enable --now pihub >>"$LOG_INSTALL" 2>&1 || true
 echo "[install] pihub service enabled and started."
 
 # ---------- Hostname ----------
-echo "[install] Setting hostname to $hostname…"
 # Derive hostname from 'room' (snake_case -> kebab-case) with '-pihub' suffix
 hostname="$(printf "%s" "$room" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_]+/_/g; s/_+/-/g')-pihub"
 sudo raspi-config nonint do_hostname "$hostname"
-echo "[install] Hostname set successfully to $hostname"
+echo "[install] hostname set successfully to $hostname"
 
 # ---------- Cleanup ----------
 BOOTSTRAP_FILE="/home/pi/bootstrap.sh"
@@ -190,7 +189,6 @@ fi
 
 echo
 echo "============================================================"
-echo "[install] Hostname set to '$hostname'."
 echo "[install] System will reboot automatically in 5 seconds..."
 echo "============================================================"
 echo
