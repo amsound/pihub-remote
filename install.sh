@@ -79,27 +79,6 @@ mqtt_port=$(prompt "MQTT Port, press enter for default" "${_port:-1883}")
 mqtt_user=$(prompt "MQTT Username, press enter for default" "${_user:-remote}")
 mqtt_pass=$(prompt "MQTT Password, press enter for default" "${_pass:-remote}")
 
-# ---------- summary + confirmation ----------
-echo
-echo "==== PiHub Room Setup ===="
-echo
-echo "Room Summary:"
-printf "  %-22s %s\n" "Room name:" "$room"
-printf "  %-22s %s\n" "Hostname:" "$hostname"
-printf "  %-22s %s\n" "MQTT Host:" "$mqtt_host"
-printf "  %-22s %s\n" "MQTT Port:" "$mqtt_port"
-printf "  %-22s %s/%s\n" "MQTT Usr & pass:" "$mqtt_user" "$mqtt_pass"
-printf "  %-22s %s\n" "MQTT Prefix Bridge:" "$prefix_bridge"
-echo
-
-read -rp "Proceed with these settings? [Y/n]: " yn || true
-yn=${yn,,}
-if [ -n "$yn" ] && [ "$yn" != "y" ] && [ "$yn" != "yes" ]; then
-  echo "[install] Aborted."
-  exit 1
-fi
-
-
 # ---------- write/update room.yaml ----------
 if [ -f "$ROOM_YAML" ]; then
   echo "[install] Updating existing room.yaml fields…"
