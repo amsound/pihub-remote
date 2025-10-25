@@ -82,7 +82,7 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         cfg.setdefault("unique_id", uid)         # always set
         if kind != "button":
             cfg.setdefault("default_entity_id", f"{kind}.{room}_pihub_{uid_suffix}")
-        bridge.publish_json(f"{disc}/{kind}/{uid}/config", cfg, qos=1, retain=True)
+        bridge.publish_json(f"{disc}/{kind}/{uid}/config", cfg, qos=0, retain=True)
 
     # ---- helper for sensors bound to the stats JSON topic ----
     def sensor(uid_suffix: str, name: str, value_tpl: str, extra: dict | None = None):

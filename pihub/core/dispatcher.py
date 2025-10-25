@@ -158,7 +158,7 @@ class Dispatcher:
         
             if action == "reboot-pi":
                 if DEBUG_DISPATCH: print("[dispatcher] running sys reboot")
-                await macros_sys.reboot_host()
+                await macros_sys.reboot_pi()
                 if DEBUG_DISPATCH: print("[macros] reboot-pi done")
                 return
         

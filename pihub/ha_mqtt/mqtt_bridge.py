@@ -6,6 +6,7 @@ import asyncio
 import json
 import threading
 import random
+import os
 from dataclasses import dataclass
 from typing import Callable, Optional
 from contextlib import suppress
@@ -90,7 +91,7 @@ class MqttBridge:
 
         # Tuning
         self.client.reconnect_delay_set(min_delay=1, max_delay=30)
-        self.client.max_inflight_messages_set(20)
+        self.client.max_inflight_messages_set(40)
         self.client.max_queued_messages_set(20)
         self.client.queue_qos0_messages = False
 
@@ -234,14 +235,15 @@ class MqttBridge:
     # ----------------------------- callbacks ------------------------------
 
     def _on_connect(self, client: mqtt.Client, userdata, flags, rc, properties=None):
+        # Derive session_present from flags (paho v3/v5 safe)
         sp = flags.get("session present") if isinstance(flags, dict) else flags
         session_present = bool(sp)
         print(f"[mqtt] connected; session_present={session_present}")
     
-        # ONLINE immediately (plain string, retained)
+        # Availability retained
         client.publish(self._topics.status.topic, "online", qos=1, retain=True)
     
-        # Always (re)subscribe so changes to topics take effect
+        # (Re)subscribe
         rc1, mid1 = client.subscribe(self.topic_activity_state, qos=1)
         if rc1 == mqtt.MQTT_ERR_SUCCESS:
             self._subs_pending[mid1] = self.topic_activity_state
@@ -250,11 +252,11 @@ class MqttBridge:
         if rc2 == mqtt.MQTT_ERR_SUCCESS:
             self._subs_pending[mid2] = self._topics.cmd_all.topic
     
-        # If this is a fresh session, clear accidental retained on our TX command topics
+        # Fresh session: clear accidental retained TX topics only
         if not session_present:
             clear_retained_at_start_bridge(client, self._topics)
     
-        # Always (re)publish discovery (retained + idempotent), then push full status
+        # Republish retained discovery every connect (idempotent), then initial stats
         publish_discovery_bridge(client, self._topics, self._room)
         stats = get_stats()
         publish_status_bridge(client, self._topics.status_info.topic, stats)
