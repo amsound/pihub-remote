@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     # type-only import to avoid circular import at runtime
     from .mqtt_topics import Topics
 
-
 def _room_pretty(room: str) -> str:
     return room.replace("_", " ").title()
 
@@ -80,95 +79,10 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
     def pub(kind: str, uid_suffix: str, cfg: dict) -> None:
         """HA discovery: replace deprecated `object_id` with `default_entity_id`."""
         uid = f"{room}_pihub_{uid_suffix}"
-    
-        # Mutate minimally; keep unique_id stable
         cfg.pop("object_id", None)  # deprecated in HA
         cfg.setdefault("default_entity_id", f"{kind}.{room}_pihub_{uid_suffix}")
         cfg.setdefault("unique_id", uid)
-    
         bridge.publish_json(f"{disc}/{kind}/{uid}/config", cfg, qos=1, retain=True)
-
-    # ---- Binary sensors ----
-    pub("binary_sensor", "online", {
-        "name": "Online",
-        "unique_id": f"{room}_pihub_online",
-        "device_class": "connectivity",
-        # State is driven directly by /status (plain 'online'/'offline')
-        "state_topic": topics.status.topic,
-        "payload_on": "online",
-        "payload_off": "offline",
-        "icon": "mdi:check-network-outline",
-        "device": device,
-    })
-    
-    pub("binary_sensor", "pi_undervoltage_now", {
-        "name": "Pi Undervoltage (Now)",
-        "unique_id": f"{room}_pihub_pi_undervoltage_now",
-        "device_class": "problem",
-        "state_topic": state_topic_info,
-        "value_template": "{{ 'ON' if value_json.pi_undervolt | default(false) else 'OFF' }}",
-        "payload_on": "ON",
-        "payload_off": "OFF",
-        "icon": "mdi:alert",
-        "entity_category": "diagnostic",
-        **avail,
-        "device": device,
-    })
-    
-    pub("binary_sensor", "pi_undervoltage_ever", {
-        "name": "Pi Undervoltage (Ever)",
-        "unique_id": f"{room}_pihub_pi_undervoltage_ever",
-        "device_class": "problem",
-        "state_topic": state_topic_info,
-        "value_template": "{{ 'ON' if value_json.pi_undervolt_ever | default(false) else 'OFF' }}",
-        "payload_on": "ON",
-        "payload_off": "OFF",
-        "icon": "mdi:alert-circle-outline",
-        "entity_category": "diagnostic",
-        **avail,
-        "device": device,
-    })
-    
-    # Activity display (reads your TX topic directly; not retained)
-    pub("sensor", "activity_display", {
-        "name": "Activity",
-        "unique_id": f"{room}_pihub_activity_display",
-        "state_topic": topics.activity.topic,  # e.g. pihub/<room>/activity
-        "value_template": "{{ value | default('-') }}",  # payload is raw string like "watch"
-        "icon": "mdi:remote",
-        **avail,
-        "device": device,
-    })
-    
-    # HA service call display (reads your TX JSON topic directly; not retained)
-    pub("sensor", "ha_service_call", {
-        "name": "HA Service",
-        "unique_id": f"{room}_pihub_ha_service_call",
-        "state_topic": topics.ha_service_call.topic,  # e.g. pihub/<room>/ha/service/call
-        "value_template": "{{ (value_json.domain ~ '.' ~ value_json.service) if value_json is defined else '-' }}",
-        "icon": "mdi:home-assistant",
-        **avail,
-        "device": device,
-    })
-    
-    # ---- Buttons (MQTT Discovery) ----
-    # Pressing these publishes a simple string to topics.cmd_all.topic
-    buttons = [
-        ("macro_atv_on",      "ATV On",              "macro:atv-on"),
-        ("macro_atv_off",     "ATV Off",             "macro:atv-off"),
-        ("sys_restart_pihub", "Restart PiHub",       "sys:restart-pihub"),
-        ("sys_reboot_pi",     "Reboot Pi",           "sys:reboot-pi"),
-        ("ble_unpair_all",    "Unpair All Devices",  "ble:unpair-all"),
-    ]
-    
-    for uid_suffix, nice_name, press in buttons:
-        pub("button", uid_suffix, {
-            "name": nice_name,
-            "command_topic": topics.cmd_all.topic,
-            "payload_press": press,
-            **avail,
-            "device": device,
-        })
 
     # ---- Helper for sensors ----
     def sensor(uid_suffix: str, name: str, value_tpl: str, extra: dict | None = None):
@@ -184,49 +98,119 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
             cfg.update(extra)
         pub("sensor", uid_suffix, cfg)
 
-    # Core sensors (with nicer icons and names)
-    sensor("hostname", "Hostname",
-           "{{ value_json.host | default('-') }}",
-           {"icon": "mdi:server"})
-    
-    sensor("ip_addr", "IP Address",
-           "{{ value_json.ip_addr | default('-') }}",
-           {"icon": "mdi:ip-network"})
-    
-    sensor("uptime_human", "Uptime",
-           "{{ ((value_json.uptime_s | default(0)) // 86400) | int }}d "
-           "{{ (((value_json.uptime_s | default(0)) % 86400) // 3600) | int }}h",
-           {"icon": "mdi:calendar-clock", "entity_category": "diagnostic"})
-    
-    # Bluetooth
-    sensor("bt_count", "BT Connected",
-           "{{ value_json.bt_connected_count | default(0) }}",
-           {"icon": "mdi:bluetooth", "state_class": "measurement", "entity_category": "diagnostic"})
-    
-    sensor("bt_macs", "BT Devices",
-           "{{ value_json.bt_connected_macs | default('-', true) }}",
-           {"icon": "mdi:bluetooth-connect", "entity_category": "diagnostic"})
-    
-    # CPU / Temp / Disk / Memory
-    sensor("cpu_load_pct", "CPU Load",
-           "{{ value_json.cpu_load_pct | default(0) }}",
-           {"icon": "mdi:chip", "unit_of_measurement": "%", "state_class": "measurement",
-            "entity_category": "diagnostic"})
-    
-    sensor("cpu_temp", "CPU Temp",
-           "{{ value_json.cpu_temp_c | default(0) }}",
-           {"icon": "mdi:thermometer", "device_class": "temperature", "unit_of_measurement": "°C",
-            "state_class": "measurement", "entity_category": "diagnostic"})
-    
+    # ---- Core diagnostics FIRST (so they always get published) ----
     sensor("disk_used_pct", "Disk Used",
            "{{ value_json.disk_used_pct | default(0) }}",
            {"icon": "mdi:harddisk", "unit_of_measurement": "%", "state_class": "measurement",
             "entity_category": "diagnostic"})
-    
+
     sensor("mem_used_pct", "Memory Used",
            "{{ value_json.mem_used_pct | default(0) }}",
            {"icon": "mdi:memory", "unit_of_measurement": "%", "state_class": "measurement",
             "entity_category": "diagnostic"})
+
+    # ---- Binary sensors ----
+    pub("binary_sensor", "online", {
+        "name": "Online",
+        "unique_id": f"{room}_pihub_online",
+        "device_class": "connectivity",
+        "state_topic": topics.status.topic,
+        "payload_on": "online",
+        "payload_off": "offline",
+        "icon": "mdi:check-network-outline",
+        "device": device,
+    })
+
+    pub("binary_sensor", "pi_undervoltage_now", {
+        "name": "Pi Undervoltage (Now)",
+        "unique_id": f"{room}_pihub_pi_undervoltage_now",
+        "device_class": "problem",
+        "state_topic": state_topic_info,
+        "value_template": "{{ 'ON' if value_json.pi_undervolt | default(false) else 'OFF' }}",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "icon": "mdi:alert",
+        "entity_category": "diagnostic",
+        **avail,
+        "device": device,
+    })
+
+    pub("binary_sensor", "pi_undervoltage_ever", {
+        "name": "Pi Undervoltage (Ever)",
+        "unique_id": f"{room}_pihub_pi_undervoltage_ever",
+        "device_class": "problem",
+        "state_topic": state_topic_info,
+        "value_template": "{{ 'ON' if value_json.pi_undervolt_ever | default(false) else 'OFF' }}",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "icon": "mdi:alert-circle-outline",
+        "entity_category": "diagnostic",
+        **avail,
+        "device": device,
+    })
+
+    # Activity display (reads your TX topic directly; not retained)
+    pub("sensor", "activity_display", {
+        "name": "Activity",
+        "unique_id": f"{room}_pihub_activity_display",
+        "state_topic": topics.activity.topic,  # e.g. pihub/<room>/activity
+        "value_template": "{{ value | default('-') }}",
+        "icon": "mdi:remote",
+        **avail,
+        "device": device,
+    })
+
+    # HA service call display (reads your TX JSON topic directly; not retained)
+    pub("sensor", "ha_service_call", {
+        "name": "HA Service",
+        "unique_id": f"{room}_pihub_ha_service_call",
+        "state_topic": topics.ha_service_call.topic,
+        "value_template": "{{ (value_json.domain ~ '.' ~ value_json.service) if value_json is defined else '-' }}",
+        "icon": "mdi:home-assistant",
+        **avail,
+        "device": device,
+    })
+
+    # CPU / Temp
+    sensor("cpu_load_pct", "CPU Load",
+           "{{ value_json.cpu_load_pct | default(0) }}",
+           {"icon": "mdi:chip", "unit_of_measurement": "%", "state_class": "measurement",
+            "entity_category": "diagnostic"})
+
+    sensor("cpu_temp", "CPU Temp",
+           "{{ value_json.cpu_temp_c | default(0) }}",
+           {"icon": "mdi:thermometer", "device_class": "temperature", "unit_of_measurement": "°C",
+            "state_class": "measurement", "entity_category": "diagnostic"})
+
+    # Bluetooth
+    sensor("bt_count", "BT Connected",
+           "{{ value_json.bt_connected_count | default(0) }}",
+           {"icon": "mdi:bluetooth", "state_class": "measurement", "entity_category": "diagnostic"})
+
+    sensor("bt_macs", "BT Devices",
+           "{{ value_json.bt_connected_macs | default('-', true) }}",
+           {"icon": "mdi:bluetooth-connect", "entity_category": "diagnostic"})
+
+    # ---- Buttons (MQTT Discovery) ----
+    buttons = [
+        ("macro_atv_on",      "ATV On",              "macro:atv-on"),
+        ("macro_atv_off",     "ATV Off",             "macro:atv-off"),
+        ("sys_restart_pihub", "Restart PiHub",       "sys:restart-pihub"),
+        ("sys_reboot_pi",     "Reboot Pi",           "sys:reboot-pi"),
+        ("ble_unpair_all",    "Unpair All Devices",  "ble:unpair-all"),
+    ]
+    try:
+        for uid_suffix, nice_name, press in buttons:
+            pub("button", uid_suffix, {
+                "name": nice_name,
+                "command_topic": topics.cmd_all.topic,
+                "payload_press": press,  # plain string
+                **avail,
+                "device": device,
+            })
+    except Exception:
+        # Do not allow a button misconfig to prevent diagnostics discovery.
+        pass
 
 
 def publish_status(bridge: Any, topics: "Topics", *, online: bool, extra: Dict[str, Any] | None = None) -> None:
