@@ -87,25 +87,6 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         cfg.setdefault("unique_id", uid)
     
         bridge.publish_json(f"{disc}/{kind}/{uid}/config", cfg, qos=1, retain=True)
-        
-    # ---- Buttons (MQTT Discovery) ----
-    # Pressing these publishes a simple string to topics.cmd_all.topic
-    buttons = [
-        ("macro_atv_on",      "ATV On",              "macro:atv-on"),
-        ("macro_atv_off",     "ATV Off",             "macro:atv-off"),
-        ("sys_restart_pihub", "Restart PiHub",       "sys:restart-pihub"),
-        ("sys_reboot_pi",     "Reboot Pi",           "sys:reboot-pi"),
-        ("ble_unpair_all",    "Unpair All Devices",  "ble:unpair-all"),
-    ]
-    
-    for uid_suffix, nice_name, press in buttons:
-        pub("button", uid_suffix, {
-            "name": nice_name,
-            "command_topic": topics.cmd_all.topic,
-            "payload_press": press,
-            **avail,
-            "device": device,
-        })
 
     # ---- Binary sensors ----
     pub("binary_sensor", "online", {
@@ -169,6 +150,25 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         **avail,
         "device": device,
     })
+    
+    # ---- Buttons (MQTT Discovery) ----
+    # Pressing these publishes a simple string to topics.cmd_all.topic
+    buttons = [
+        ("macro_atv_on",      "ATV On",              "macro:atv-on"),
+        ("macro_atv_off",     "ATV Off",             "macro:atv-off"),
+        ("sys_restart_pihub", "Restart PiHub",       "sys:restart-pihub"),
+        ("sys_reboot_pi",     "Reboot Pi",           "sys:reboot-pi"),
+        ("ble_unpair_all",    "Unpair All Devices",  "ble:unpair-all"),
+    ]
+    
+    for uid_suffix, nice_name, press in buttons:
+        pub("button", uid_suffix, {
+            "name": nice_name,
+            "command_topic": topics.cmd_all.topic,
+            "payload_press": press,
+            **avail,
+            "device": device,
+        })
 
     # ---- Helper for sensors ----
     def sensor(uid_suffix: str, name: str, value_tpl: str, extra: dict | None = None):
