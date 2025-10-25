@@ -67,9 +67,8 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         "sw_version": "paho-mqtt",
     }
 
-    # New split: availability string + JSON stats
-    state_topic_info = topics.status_info.topic   # JSON stats
-    # Availability: plain string "online"/"offline" on /status
+    # JSON stats topic + online/offline availability
+    state_topic_info = topics.status_info.topic
     avail = {
         "availability_topic": topics.status.topic,
         "payload_available": "online",
@@ -77,19 +76,20 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
     }
 
     def pub(kind: str, uid_suffix: str, cfg: dict) -> None:
-        """HA discovery: replace deprecated `object_id` with `default_entity_id`."""
+        # Stable IDs; avoid default_entity_id on buttons
         uid = f"{room}_pihub_{uid_suffix}"
-        cfg.pop("object_id", None)  # deprecated in HA
-        cfg.setdefault("default_entity_id", f"{kind}.{room}_pihub_{uid_suffix}")
-        cfg.setdefault("unique_id", uid)
+        cfg.pop("object_id", None)               # deprecated in HA
+        cfg.setdefault("unique_id", uid)         # always set
+        if kind != "button":
+            cfg.setdefault("default_entity_id", f"{kind}.{room}_pihub_{uid_suffix}")
         bridge.publish_json(f"{disc}/{kind}/{uid}/config", cfg, qos=1, retain=True)
 
-    # ---- Helper for sensors ----
+    # ---- helper for sensors bound to the stats JSON topic ----
     def sensor(uid_suffix: str, name: str, value_tpl: str, extra: dict | None = None):
         cfg = {
             "name": name,
             "unique_id": f"{room}_pihub_{uid_suffix}",
-            "state_topic": state_topic_info,   # JSON stats topic
+            "state_topic": state_topic_info,
             "value_template": value_tpl,
             **avail,
             "device": device,
@@ -98,29 +98,17 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
             cfg.update(extra)
         pub("sensor", uid_suffix, cfg)
 
-    # ---- Core diagnostics FIRST (so they always get published) ----
-    sensor("disk_used_pct", "Disk Used",
-           "{{ value_json.disk_used_pct | default(0) }}",
-           {"icon": "mdi:harddisk", "unit_of_measurement": "%", "state_class": "measurement",
-            "entity_category": "diagnostic"})
-
-    sensor("mem_used_pct", "Memory Used",
-           "{{ value_json.mem_used_pct | default(0) }}",
-           {"icon": "mdi:memory", "unit_of_measurement": "%", "state_class": "measurement",
-            "entity_category": "diagnostic"})
-
-    # ---- Binary sensors ----
+    # ---- Binary sensors (availability + undervoltage) ----
     pub("binary_sensor", "online", {
         "name": "Online",
         "unique_id": f"{room}_pihub_online",
         "device_class": "connectivity",
-        "state_topic": topics.status.topic,
+        "state_topic": topics.status.topic,  # plain "online"/"offline"
         "payload_on": "online",
         "payload_off": "offline",
         "icon": "mdi:check-network-outline",
         "device": device,
     })
-
     pub("binary_sensor", "pi_undervoltage_now", {
         "name": "Pi Undervoltage (Now)",
         "unique_id": f"{room}_pihub_pi_undervoltage_now",
@@ -134,7 +122,6 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         **avail,
         "device": device,
     })
-
     pub("binary_sensor", "pi_undervoltage_ever", {
         "name": "Pi Undervoltage (Ever)",
         "unique_id": f"{room}_pihub_pi_undervoltage_ever",
@@ -149,47 +136,59 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         "device": device,
     })
 
-    # Activity display (reads your TX topic directly; not retained)
+    # ---- Display-only sensors (direct topics) ----
     pub("sensor", "activity_display", {
         "name": "Activity",
         "unique_id": f"{room}_pihub_activity_display",
-        "state_topic": topics.activity.topic,  # e.g. pihub/<room>/activity
-        "value_template": "{{ value | default('-') }}",
+        "state_topic": topics.activity.topic,  # raw string, non-retained
+        "value_template": "{{ value | default('-', true) }}",  # treat empty as '-'
         "icon": "mdi:remote",
         **avail,
         "device": device,
     })
-
-    # HA service call display (reads your TX JSON topic directly; not retained)
     pub("sensor", "ha_service_call", {
         "name": "HA Service",
         "unique_id": f"{room}_pihub_ha_service_call",
         "state_topic": topics.ha_service_call.topic,
-        "value_template": "{{ (value_json.domain ~ '.' ~ value_json.service) if value_json is defined else '-' }}",
+        "value_template": "{{ (value_json.domain ~ '.' ~ value_json.service) if (value_json is defined and 'domain' in value_json and 'service' in value_json and value_json.domain and value_json.service) else '-' }}",
         "icon": "mdi:home-assistant",
         **avail,
         "device": device,
     })
 
-    # CPU / Temp
+    # ---- Core stats sensors (hostname/ip/uptime/BT/CPU/TEMP/DISK/MEM) ----
+    sensor("hostname", "Hostname",
+           "{{ value_json.host | default('-') }}",
+           {"icon": "mdi:server"})
+    sensor("ip_addr", "IP Address",
+           "{{ value_json.ip_addr | default('-') }}",
+           {"icon": "mdi:ip-network"})
+    sensor("uptime_human", "Uptime",
+           "{{ ((value_json.uptime_s | default(0)) // 86400) | int }}d "
+           "{{ (((value_json.uptime_s | default(0)) % 86400) // 3600) | int }}h",
+           {"icon": "mdi:calendar-clock", "entity_category": "diagnostic"})
+    sensor("bt_count", "BT Connected",
+           "{{ value_json.bt_connected_count | default(0) }}",
+           {"icon": "mdi:bluetooth", "state_class": "measurement", "entity_category": "diagnostic"})
+    sensor("bt_macs", "BT Devices",
+           "{{ value_json.bt_connected_macs | default('-', true) }}",
+           {"icon": "mdi:bluetooth-connect", "entity_category": "diagnostic"})
     sensor("cpu_load_pct", "CPU Load",
            "{{ value_json.cpu_load_pct | default(0) }}",
            {"icon": "mdi:chip", "unit_of_measurement": "%", "state_class": "measurement",
             "entity_category": "diagnostic"})
-
     sensor("cpu_temp", "CPU Temp",
            "{{ value_json.cpu_temp_c | default(0) }}",
            {"icon": "mdi:thermometer", "device_class": "temperature", "unit_of_measurement": "°C",
             "state_class": "measurement", "entity_category": "diagnostic"})
-
-    # Bluetooth
-    sensor("bt_count", "BT Connected",
-           "{{ value_json.bt_connected_count | default(0) }}",
-           {"icon": "mdi:bluetooth", "state_class": "measurement", "entity_category": "diagnostic"})
-
-    sensor("bt_macs", "BT Devices",
-           "{{ value_json.bt_connected_macs | default('-', true) }}",
-           {"icon": "mdi:bluetooth-connect", "entity_category": "diagnostic"})
+    sensor("disk_used_pct", "Disk Used",
+           "{{ value_json.disk_used_pct | default(0) }}",
+           {"icon": "mdi:harddisk", "unit_of_measurement": "%", "state_class": "measurement",
+            "entity_category": "diagnostic"})
+    sensor("mem_used_pct", "Memory Used",
+           "{{ value_json.mem_used_pct | default(0) }}",
+           {"icon": "mdi:memory", "unit_of_measurement": "%", "state_class": "measurement",
+            "entity_category": "diagnostic"})
 
     # ---- Buttons (MQTT Discovery) ----
     buttons = [
@@ -199,8 +198,9 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         ("sys_reboot_pi",     "Reboot Pi",           "sys:reboot-pi"),
         ("ble_unpair_all",    "Unpair All Devices",  "ble:unpair-all"),
     ]
-    try:
-        for uid_suffix, nice_name, press in buttons:
+    
+    for uid_suffix, nice_name, press in buttons:
+        try:
             pub("button", uid_suffix, {
                 "name": nice_name,
                 "command_topic": topics.cmd_all.topic,
@@ -208,10 +208,9 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
                 **avail,
                 "device": device,
             })
-    except Exception:
-        # Do not allow a button misconfig to prevent diagnostics discovery.
-        pass
-
+        except Exception:
+            # keep discovery going even if one button misbehaves
+            pass
 
 def publish_status(bridge: Any, topics: "Topics", *, online: bool, extra: Dict[str, Any] | None = None) -> None:
     """
