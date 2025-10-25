@@ -3,9 +3,14 @@ import asyncio
 import signal
 import sys
 import json
-from pathlib import Path
+import time
+import inspect
+import os
 import hashlib
 import contextlib
+
+from pathlib import Path
+from typing import Tuple, Callable, Awaitable
 
 from pihub.bt_le.hid_device import start_hid
 from pihub.bt_le.hid_client import HIDClient
@@ -15,7 +20,6 @@ from pihub.core.remote_evdev import load_remote_config, read_events_scancode
 from pihub.core.dispatcher import Dispatcher, load_activities, watch_activities, Activities
 from pihub.core.config import load_room_config
 from pihub.ha_mqtt.mqtt_bridge import MqttBridge, MqttConfig
-from pihub.macros import atv
 
 # -------------------
 # Paths / Config files
@@ -28,9 +32,6 @@ REMOTE_KEYMAP_PATH = CONFIG_DIR / "remote_keymap.yaml"
 ACTIVITIES_PATH    = CONFIG_DIR / "activities.yaml"
 
 # --- low-latency input→dispatch pipeline (top-level) ---
-import asyncio, time, inspect, os
-from typing import Tuple, Callable, Awaitable
-
 EVENT_QUEUE_MAX = 128
 evt_q: asyncio.Queue[Tuple[str, str, int]] = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
 
@@ -70,15 +71,26 @@ async def ble_sender_worker(handle_fn: Callable[[str, str], Awaitable | None]) -
             print(f"[dispatch] error {name}/{edge}: {e}")
         finally:
             evt_q.task_done()
-# --- end pipeline bits ---
 
 async def main():
     # ── 1) Room config ──────────────────────────────────────────────────────────
-    room_cfg = load_room_config(CONFIG_DIR / "room.yaml")
+    room_path = CONFIG_DIR / "room.yaml"
+    try:
+        room_cfg = load_room_config(room_path)
+    except FileNotFoundError:
+        # Fail fast with a clear, actionable message; exit code 78 = configuration error
+        print(f'[app] missing "room.yaml" at: {room_path} → create this file and restart')
+        sys.exit(78)
+    
+    def _pretty_room(name: str) -> str:
+        s = (name or "").replace("_", " ").replace("-", " ").strip()
+        return s.title()
+    _room_pretty = _pretty_room(room_cfg.room)
+    print(f'[app] "{_room_pretty}" config loaded')
 
     # ── 2) Load HID keymaps (initial) ──────────────────────────────────────────
     km = load_keymaps(str(HID_KEYMAP_PATH))
-    print(f"[app] keymaps loaded: {len(km.keyboard)} kb, {len(km.consumer)} cc")
+    print(f"[app] hid keymaps: {len(km.consumer)} consumer, {len(km.keyboard)} kb")
 
     # Debounce state for keymaps
     def _km_digest(km_obj) -> str:
@@ -99,7 +111,7 @@ async def main():
             return
         km = new
         km_last = new_hash
-        print(f"[app] keymaps reloaded: {len(km.keyboard)} Keyboard, {len(km.consumer)} Consumer")
+        print(f"[app] hid keymaps reloaded: {len(km.consumer)} consumer, {len(km.keyboard)} kb")
 
     def on_km_reload(new):
         nonlocal km_debounce_task
@@ -132,7 +144,7 @@ async def main():
         activities=Activities(default="null", activities={}),
     )
     dispatcher.set_activity("null")
-    print("[app] activity set to null (waiting to receive state from HA)")
+    print("[app] activity set to null, waiting for mqtt")
 
     # ── 4) Activities (seed + debounced hot reload) ────────────────────────────
     acts = load_activities(str(ACTIVITIES_PATH))
@@ -158,7 +170,7 @@ async def main():
         dispatcher.activities = new_acts
         acts_last = new_hash
         names2 = sorted(new_acts.activities.keys())
-        print(f"[app] {len(names2)} activities Reloaded")
+        print(f"[app] {len(names2)} activities reloaded")
         print(f"[app] activities updated: {names2}")
 
     def on_acts_reload(new_acts):
@@ -220,7 +232,7 @@ async def main():
     else:
         async def shutdown():
             pass  # no-op when BLE disabled
-        print("[app] Bluetooth disabled via config; running without BLE HID")
+        print("[app] bluetooth disabled via config; running without BLE HID")
 
     # ── 8) Remote reader (evdev) ──────────────────────────────────────────────
     rcfg = load_remote_config(str(REMOTE_KEYMAP_PATH))
@@ -241,7 +253,7 @@ async def main():
         ),
         name="read_events",
     )
-    print("[app] remote reader started")
+    print("[app] usb remote reader started")
 
     # ── 9) Signals / lifecycle -───────────────────────────────────────────────
     app_tasks = [t for t in (ble_sender_task, remote_task, km_task, acts_task, km_debounce_task, acts_debounce_task) if t]

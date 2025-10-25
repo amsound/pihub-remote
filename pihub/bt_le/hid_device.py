@@ -540,7 +540,7 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
                 await app.unregister()
             raise RuntimeError(f"Advertising register failed after retry: mode={mode}")
     
-    print(f"[hid] advertising registered (as {device_name} on {adapter_name}")
+    print(f'[hid] advertising registered as "{device_name}" on "{adapter_name}"')
     
     # Start link watcher (flips _link_ready and prints concise pairing log)
     link_task = asyncio.create_task(watch_link(bus, advert, hid), name="hid_watch_link")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import random
 from dataclasses import dataclass
 from typing import Callable, Optional
 from contextlib import suppress
@@ -27,7 +28,7 @@ class MqttConfig:
     password: str | None
     prefix_bridge: str
     input_select_entity: str  # e.g. "living_room_activity"
-    status_interval_sec: int = 10
+    status_interval_sec: int = 30
 
 
 class MqttBridge:
@@ -59,8 +60,8 @@ class MqttBridge:
             password=cfg.password,
             prefix_bridge=cfg.prefix_bridge,
             room=self._room,
-            client_id=f"pihub:{self._room}",
-            keepalive=15,
+            client_id=f"{self._room}:pihub",
+            keepalive=30,
             tls=False,
         )
 
@@ -72,7 +73,7 @@ class MqttBridge:
         # paho client (persistent session)
         self.client = mqtt.Client(
             client_id=self._core.client_id,
-            clean_session=False,
+            clean_session=True,
             protocol=mqtt.MQTTv311,
             transport="tcp",
         )
@@ -89,8 +90,9 @@ class MqttBridge:
 
         # Tuning
         self.client.reconnect_delay_set(min_delay=1, max_delay=30)
-        self.client.max_inflight_messages_set(40)
-        self.client.max_queued_messages_set(50)
+        self.client.max_inflight_messages_set(20)
+        self.client.max_queued_messages_set(20)
+        self.client.queue_qos0_messages = False
 
         # Callbacks
         self.client.on_connect = self._on_connect
@@ -104,6 +106,8 @@ class MqttBridge:
 
         # Activity provider callable (used by your app, if needed later)
         self._activity_provider: Optional[Callable[[], str]] = None
+        
+        self._subs_pending: dict[int, str] = {}  # mid → topic
 
     # --------------------- public API used by your app ---------------------
 
@@ -112,10 +116,15 @@ class MqttBridge:
     
         # Capture the app loop so callbacks can schedule coroutines safely
         self._loop = asyncio.get_running_loop()
-        
-        self.client.connect(self._core.host, self._core.port, self._core.keepalive)
+    
+        # Small random stagger to reduce herd connects across devices
+        await asyncio.sleep(random.uniform(0, 3))
+
+        # Non-blocking connect; resilient when broker is down
+        self.client.connect_async(self._core.host, self._core.port, self._core.keepalive)
         self.client.loop_start()
-        # Periodic status with real stats
+    
+        # Periodic status; uses _try_publish_or_drop so it’s safe while offline
         self._status_task = asyncio.create_task(self._status_heartbeat(), name="mqtt_status_hb")
 
     async def shutdown(self) -> None:
@@ -157,7 +166,7 @@ class MqttBridge:
         }
         js = json.dumps(payload, separators=(",", ":"))
         if DEBUG_MQTT: print(f"[mqtt:tx] topic={self._topics.ha_service_call.topic} qos=1 retain=False payload={js}")
-        self._try_publish_or_buffer(
+        self._try_publish_or_drop(
             self._topics.ha_service_call.topic,
             js.encode(),
             qos=1,
@@ -170,7 +179,7 @@ class MqttBridge:
         if not act:
             return
         if DEBUG_MQTT: print(f"[mqtt:tx] topic={self._topics.activity.topic} qos=1 retain=False payload={act}")
-        self._try_publish_or_buffer(
+        self._try_publish_or_drop(
             self._topics.activity.topic,
             act.encode(),
             qos=1,
@@ -178,37 +187,47 @@ class MqttBridge:
             kind="activity",
         )
         
-    def _try_publish_or_buffer(self, topic: str, payload: bytes, *, qos: int, retain: bool, kind: str) -> None:
+    def _try_publish_or_drop(self, topic: str, payload: bytes, *, qos: int, retain: bool, kind: str) -> None:
         """
-        Simplest policy: if we're offline, DROP the message (no buffering).
-        Avoids stale floods and HA race conditions on reconnect.
+        If offline: DROP (no buffering). Prevents stale floods after reconnect.
+        Minimal log: no payload included.
         """
         if self.client.is_connected():
             self.client.publish(topic, payload, qos=qos, retain=retain)
             return
-    
-        # offline -> drop (but log)
-        try:
-            preview = payload.decode("utf-8", "replace")
-        except Exception:
-            preview = "<bytes>"
-        print(f"[mqtt:drop] offline {kind} discarded: topic={topic} qos={qos} payload={preview}")
+        print(f"[mqtt] offline! dropped {kind} QoS{qos} -> {topic}")
+
 
     # -------------------------- internal helpers --------------------------
 
     async def _status_heartbeat(self) -> None:
-        """Immediate + periodic status publishes with real stats."""
+        """Immediate + periodic status publishes with real stats; drop when offline."""
         interval = max(5, int(self.cfg.status_interval_sec))
         try:
-            # Initial full status (after connect callback also fires one)
+            # Initial status (helper drops if offline)
             await asyncio.sleep(0.1)
             stats = get_stats()
-            publish_status_bridge(self.client, self._topics.status_info.topic, stats)
+            payload = json.dumps(stats, separators=(",", ":")).encode("utf-8")
+            self._try_publish_or_drop(
+                self._topics.status_info.topic,
+                payload,
+                qos=0,
+                retain=False,
+                kind="status",
+            )
+    
             # Heartbeat
             while not self._stopping.is_set():
                 await asyncio.sleep(interval)
                 stats = get_stats()
-                publish_status_bridge(self.client, self._topics.status_info.topic, stats)
+                payload = json.dumps(stats, separators=(",", ":")).encode("utf-8")
+                self._try_publish_or_drop(
+                    self._topics.status_info.topic,
+                    payload,
+                    qos=0,
+                    retain=False,
+                    kind="status",
+                )
         except asyncio.CancelledError:
             return
 
@@ -218,22 +237,23 @@ class MqttBridge:
         sp = flags.get("session present") if isinstance(flags, dict) else flags
         session_present = bool(sp)
         print(f"[mqtt] connected; session_present={session_present}")
-
+    
         # ONLINE immediately (plain string, retained)
         client.publish(self._topics.status.topic, "online", qos=1, retain=True)
-
+    
         # Always (re)subscribe so changes to topics take effect
-        # Use the statestream topic *with* the _activity suffix from config
-        print(f"[mqtt] subscribing → {self.topic_activity_state}")
-        client.subscribe(self.topic_activity_state, qos=1)
-        
-        print(f"[mqtt] subscribing → {self._topics.cmd_all.topic}")
-        client.subscribe(self._topics.cmd_all.topic, qos=self._topics.cmd_all.qos)
-
+        rc1, mid1 = client.subscribe(self.topic_activity_state, qos=1)
+        if rc1 == mqtt.MQTT_ERR_SUCCESS:
+            self._subs_pending[mid1] = self.topic_activity_state
+    
+        rc2, mid2 = client.subscribe(self._topics.cmd_all.topic, qos=self._topics.cmd_all.qos)
+        if rc2 == mqtt.MQTT_ERR_SUCCESS:
+            self._subs_pending[mid2] = self._topics.cmd_all.topic
+    
         # If this is a fresh session, clear accidental retained on our TX command topics
         if not session_present:
             clear_retained_at_start_bridge(client, self._topics)
-
+    
         # Always (re)publish discovery (retained + idempotent), then push full status
         publish_discovery_bridge(client, self._topics, self._room)
         stats = get_stats()
@@ -241,10 +261,15 @@ class MqttBridge:
 
     def _on_disconnect(self, client: mqtt.Client, userdata, rc, properties=None):
         if rc != 0:
-            print(f"[mqtt] disconnected unexpectedly rc={rc}; paho will reconnect")
+            print(f"[mqtt] disconnected unexpectedly rc={rc}; retrying")
 
     def _on_subscribe(self, client, userdata, mid, granted_qos, properties=None):
-        print(f"[mqtt] subscribed mid={mid} qos={granted_qos}")
+        topic = self._subs_pending.pop(mid, None)
+        if topic:
+            print(f"[mqtt] subscribed → {topic}")
+        else:
+            # Fallback if mid not tracked (wildcards/multi-subs or broker-side resub)
+            print(f"[mqtt] subscribed mid={mid} qos={granted_qos}")
 
     def _on_message(self, client: mqtt.Client, userdata, msg: mqtt.MQTTMessage):
         t = msg.topic
@@ -266,7 +291,7 @@ class MqttBridge:
                 # on_command accepts a single string now (e.g. "macro:atv-on")
                 self._call_handler(self.on_command, cmd)
             else:
-                print("[cmd] empty/invalid payload on command bus")
+                print("[mqtt] cmd empty/invalid payload on command bus")
             return
                     
                     

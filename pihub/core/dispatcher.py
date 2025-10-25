@@ -8,9 +8,7 @@ from pihub.macros import atv as macros_atv
 from pihub.macros import sys as macros_sys
 from pihub.macros import ble as macros_ble
 
-DEBUG_HID = False
-DEBUG_HA = False
-DEBUG_INTENT = False
+DEBUG_DISPATCH = False
 
 # -----------------
 # Activities model
@@ -42,7 +40,7 @@ async def watch_activities(
             last = os.path.getmtime(path)
         except FileNotFoundError:
             last = None
-        print(f"[dispatcher] {len(acts.activities)} activities reloaded")
+        print(f"[dispatcher] {len(acts.activities)} activities loaded")
     except FileNotFoundError:
         pass
 
@@ -102,7 +100,7 @@ class Dispatcher:
         if getattr(self, "activity", None) == name:
             return  # no change
         self.activity = name
-        print(f"[dispatcher] activity → {name}")
+        print(f"[dispatcher] activity→{name}")
         cb = getattr(self, "on_activity_change", None)
         if cb:
             try:
@@ -119,65 +117,65 @@ class Dispatcher:
         - Fire-and-forget: no acks returned
         """
         if not cmd:
-            print("[cmd] empty command")
+            print("[dispatcher→mqtt] cmd:rx - payload empty!")
             return
     
         parts = cmd.split(":", 1)
         if len(parts) != 2:
-            print(f"[cmd] bad format (expected 'cat:action'): {cmd!r}")
+            print(f"[dispatcher→mqtt] cmd:rx - bad format (expected 'cat:action'): {cmd!r}")
             return
     
         cat, action = parts[0].strip().lower(), parts[1].strip().lower()
     
         # --------- category: macro (BLE key macros) ---------
         if cat == "macro":
-            print(f"[cmd] recv {cat}:{action}")
+            if DEBUG_DISPATCH: print(f'[dispatcher→mqtt] cmd:rx - "{cat}:{action}"')
         
             if action == "atv-on":
-                print("[cmd] running macro atv-on…")
+                if DEBUG_DISPATCH: print("[dispatcher] running macro atv-on…")
                 await macros_atv.atv_on(self.hid, ikd_ms=400)
-                # print("[macros] ran atv-on")
+                if DEBUG_DISPATCH: print("[macros] atv-on done")
                 return
         
             if action == "atv-off":
-                print("[cmd] running macro atv-off…")
+                if DEBUG_DISPATCH: print("[dispatcher] running macro atv-off…")
                 await macros_atv.atv_off(self.hid, ikd_ms=400)
-                # print("[macros] ran atv-off")
+                if DEBUG_DISPATCH: print("[macros] atv-off done")
                 return
         
-            print(f"[cmd] unknown macro: {action!r}")
+            if DEBUG_DISPATCH: print(f"[dispatcher→mqtt] cmd:rx - unknown macro: {action!r}")
             return
     
         # --------- category: sys (service/system controls) ---------
         if cat == "sys":
-            print(f"[cmd] recv {cat}:{action}")
+            if DEBUG_DISPATCH: print(f'[dispatcher→mqtt] cmd:rx - "{cat}:{action}"')
         
             if action == "restart-pihub":
-                print("[cmd] running sys restart-pihub…")
+                if DEBUG_DISPATCH: print("[dispatcher] running sys restart-pihub…")
                 await macros_sys.restart_pihub()
-                # print("[sys] pihub.service restart requested")
+                if DEBUG_DISPATCH: print("[macros] restart-pihub done")
                 return
         
             if action == "reboot-pi":
-                print("[cmd] running sys reboot")
+                if DEBUG_DISPATCH: print("[dispatcher] running sys reboot")
                 await macros_sys.reboot_host()
-                # print("[sys] host reboot requested")
+                if DEBUG_DISPATCH: print("[macros] reboot-pi done")
                 return
         
-            print(f"[cmd] unknown sys command: {action!r}")
+            if DEBUG_DISPATCH: print(f"[dispatcher→mqtt] cmd:rx - unknown sys: {action!r}")
             return
             
         # --------- category: ble (Bluetooth maintenance) ---------
         if cat == "ble":
-            print(f"[cmd] recv {cat}:{action}")
+            if DEBUG_DISPATCH: print(f'[dispatcher→mqtt] cmd:rx - "{cat}:{action}"')
         
             if action == "unpair-all":
-                print("[cmd] running ble unpair-all")
+                if DEBUG_DISPATCH: print("[dispatcher] running ble unpair-all")
                 await macros_ble.unpair_all(adapter="hci0")
-                # print("[ble] unpair-all done - recommend restart bluetooth service")
+                if DEBUG_DISPATCH: print("[macros] unpair-all done")
                 return
         
-            print(f"[cmd] unknown ble command: {action!r}")
+            if DEBUG_DISPATCH: print(f"[dispatcher→mqtt] cmd:rx - unknown ble: {action!r}")
             return
 
     
@@ -255,10 +253,10 @@ class Dispatcher:
             if usage is None:
                 return
             if edge == "down":
-                if DEBUG_HID: print(f"[dispatch→hid] consumer DOWN {name} (0x{usage:04X})")
+                if DEBUG_DISPATCH: print(f"[dispatch→hid] consumer DOWN {name} (0x{usage:04X})")
                 await self.hid.consumer_down(usage)
             elif edge == "up":
-                if DEBUG_HID: print(f"[dispatch→hid] consumer UP   {name} (→0)")
+                if DEBUG_DISPATCH: print(f"[dispatch→hid] consumer UP   {name} (→0)")
                 await self.hid.consumer_up()
             return
     
@@ -268,10 +266,10 @@ class Dispatcher:
             if code is None:
                 return
             if edge == "down":
-                if DEBUG_HID: print(f"[dispatch→hid] keyboard DOWN {name} (0x{code:02X})")
+                if DEBUG_DISPATCH: print(f"[dispatch→hid] keyboard DOWN {name} (0x{code:02X})")
                 await self.hid.key_down(code)
             elif edge == "up":
-                if DEBUG_HID: print(f"[dispatch→hid] keyboard UP   {name}")
+                if DEBUG_DISPATCH: print(f"[dispatch→hid] keyboard UP   {name}")
                 await self.hid.key_up()
             return
 
@@ -288,7 +286,7 @@ class Dispatcher:
             if rep:
                 if edge == "down":
                     # fire once immediately (log it)
-                    if DEBUG_HA: print(f"[dispatch→HA] {logical_name} {edge} -> {domain}.{service} {data}")
+                    if DEBUG_DISPATCH: print(f"[dispatch→HA] {logical_name} {edge} -> {domain}.{service} {data}")
                     await self.mqtt.publish_ha_service(domain, service, data)
                     # then start repeat timer (first repeat after initial_ms)
                     await self._start_repeat(
@@ -302,7 +300,7 @@ class Dispatcher:
                 # single fire; default to 'up' unless overridden
                 when = a.get("when", "up")
                 if when == "both" or (when == edge):
-                    if DEBUG_HA: print(f"[dispatch→HA] {logical_name} {edge} -> {domain}.{service} {data}")
+                    if DEBUG_DISPATCH: print(f"[dispatch→HA] {logical_name} {edge} -> {domain}.{service} {data}")
                     await self.mqtt.publish_ha_service(domain, service, data)
             return
             
@@ -317,58 +315,18 @@ class Dispatcher:
             target = (a.get("to") or a.get("name") or "").lower()
             if target in ("watch", "listen", "power_off"):
                 await self.mqtt.publish_activity_intent(target)
-                if DEBUG_INTENT: print(f"[dispatch→HA] intent → {target}")
+                if DEBUG_DISPATCH: print(f"[dispatch→HA] intent → {target}")
             else:
-                if DEBUG_INTENT: print(f"[Dispatch→HA] unknown activity intent: {target!r}")
-            return
-        
-        
-        # 4) Apple TV via pyATV (semantic gestures)
-        if kind == "atv":
-            svc = getattr(self, "atv", None)
-            if not svc:
-                print("[atv] not enabled (dispatcher.atv missing)")
-                return
-
-            # Defaults
-            cmd      = (a.get("cmd") or "tap").lower()          # tap | hold | double
-            key      = (a.get("key") or a.get("name") or "").lower()
-            when     = (a.get("when") or "up").lower()
-            delay_ms = int(a.get("delay_ms") or 0)
-            hold_ms  = int(a.get("hold_ms") or 0)
-
-            if not key:
-                print("[atv] missing 'key' in action")
-                return
-
-            # Otherwise: direct call, respecting 'when'
-            if when != edge:
-                return
-
-            try:
-                if cmd == "tap":
-                    await svc.tap(key)
-                elif cmd == "hold":
-                    await svc.hold(key, ms=(hold_ms or None))
-                elif cmd in ("double", "doubletap"):
-                    await svc.double(key)
-                else:
-                    print(f"[atv] unknown cmd '{cmd}'")
-                    return
-
-                if delay_ms > 0:
-                    await asyncio.sleep(delay_ms / 1000.0)
-            except Exception as e:
-                print(f"[atv] error: {e}")
+                if DEBUG_DISPATCH: print(f"[Dispatch→HA] unknown activity intent: {target!r}")
             return
 
-        # 5) Sleep utility
+        # 4) Sleep utility
         if kind == "sleep_ms":
             if edge == "down":
                 await asyncio.sleep(a.get("ms", 0) / 1000)
             return
 
-        # 6) Placeholder
+        # 5) Placeholder
         if kind == "noop":
             return
 

@@ -16,7 +16,7 @@ class MqttConfig:
     prefix_bridge: str  # e.g. "pihub/living_room"
     room: str          # e.g. "living_room"
     client_id: str     # e.g. "pihub:living_room"
-    keepalive: int = 15
+    keepalive: int = 30
     tls: bool = False
 
 
@@ -37,6 +37,6 @@ def load_config(path: str | Path) -> MqttConfig:
         prefix_bridge=prefix_bridge,
         room=room,
         client_id=client_id,
-        keepalive=int(m.get("keepalive", 15)),
+        keepalive=int(m.get("keepalive", 30)),
         tls=bool(m.get("tls", False)),
     )

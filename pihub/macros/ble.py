@@ -34,7 +34,7 @@ async def unpair_all(adapter: str = "hci0") -> None:
         ]
 
         if not dev_paths:
-            print("[ble] no paired devices found")
+            print("[macros] no paired bluetooth devices found")
             return
 
         # Prepare adapter proxy once
@@ -60,13 +60,13 @@ async def unpair_all(adapter: str = "hci0") -> None:
 
                 # Remove the device (this clears the bond and will trigger disconnect if still up)
                 await adapter_if.call_remove_device(path)
-                print(f"[ble] removed paired device {path}")
+                print(f"[macros] removed paired bluetooth device {path}")
                 removed += 1
             except Exception as e:
-                print(f"[ble] failed to remove {path}: {e}")
+                print(f"[macros] failed to remove bluetooth device {path}: {e}")
 
         if removed == 0:
-            print("[ble] no devices removed (errors above)")
+            print("[macros] no bluetooth devices removed (errors above)")
     finally:
         # dbus-fast disconnect() is synchronous
         bus.disconnect()

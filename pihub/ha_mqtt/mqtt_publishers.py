@@ -4,6 +4,7 @@ from __future__ import annotations
 import platform
 import socket
 import time
+import json
 from typing import Any, Dict, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -26,7 +27,7 @@ def clear_retained_at_start(bridge: Any, topics: "Topics") -> None:
 
 def clear_discovery(bridge: Any, topics: "Topics", room: str) -> None:
     disc = topics.disc_prefix
-    uid = f"pihub_{room}"
+    uid = f"{room}_pihub"
     cfgs = [
         f"{disc}/binary_sensor/{uid}_online/config",
         f"{disc}/binary_sensor/{uid}_pi_undervoltage_now/config",
@@ -42,6 +43,11 @@ def clear_discovery(bridge: Any, topics: "Topics", room: str) -> None:
         f"{disc}/sensor/{uid}_cpu_temp/config",
         f"{disc}/sensor/{uid}_disk_used_pct/config",
         f"{disc}/sensor/{uid}_mem_used_pct/config",
+        f"{disc}/button/{uid}_macro_atv_on/config",
+        f"{disc}/button/{uid}_macro_atv_off/config",
+        f"{disc}/button/{uid}_sys_restart_pihub/config",
+        f"{disc}/button/{uid}_sys_reboot_pi/config",
+        f"{disc}/button/{uid}_ble_unpair_all/config",
     ]
     for t in cfgs:
         bridge.publish_bytes(t, b"", qos=1, retain=True)
@@ -55,7 +61,7 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
     disc = topics.disc_prefix
     pretty = _room_pretty(room)
     device = {
-        "identifiers": [f"pihub_{room}"],
+        "identifiers": [f"{room}_pihub"],
         "name": f"{pretty} - PiHub",
         "manufacturer": "PiHub",
         "model": "PiHub Remote Bridge",
@@ -72,15 +78,39 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
     }
 
     def pub(kind: str, uid_suffix: str, cfg: dict) -> None:
-        uid = f"pihub_{room}_{uid_suffix}"
-        cfg.setdefault("object_id", f"{room}_pihub_{uid_suffix}")
+        """HA discovery: replace deprecated `object_id` with `default_entity_id`."""
+        uid = f"{room}_pihub_{uid_suffix}"
+    
+        # Mutate minimally; keep unique_id stable
+        cfg.pop("object_id", None)  # deprecated in HA
+        cfg.setdefault("default_entity_id", f"{kind}.{room}_pihub_{uid_suffix}")
         cfg.setdefault("unique_id", uid)
+    
         bridge.publish_json(f"{disc}/{kind}/{uid}/config", cfg, qos=1, retain=True)
+        
+    # ---- Buttons (MQTT Discovery) ----
+    # Pressing these publishes a simple string to topics.cmd_all.topic
+    buttons = [
+        ("macro_atv_on",      "ATV On",              "macro:atv-on"),
+        ("macro_atv_off",     "ATV Off",             "macro:atv-off"),
+        ("sys_restart_pihub", "Restart PiHub",       "sys:restart-pihub"),
+        ("sys_reboot_pi",     "Reboot Pi",           "sys:reboot-pi"),
+        ("ble_unpair_all",    "Unpair All Devices",  "ble:unpair-all"),
+    ]
+    
+    for uid_suffix, nice_name, press in buttons:
+        pub("button", uid_suffix, {
+            "name": nice_name,
+            "command_topic": topics.cmd_all.topic,
+            "payload_press": press,
+            **avail,
+            "device": device,
+        })
 
     # ---- Binary sensors ----
     pub("binary_sensor", "online", {
         "name": "Online",
-        "unique_id": f"pihub_{room}_online",
+        "unique_id": f"{room}_pihub_online",
         "device_class": "connectivity",
         # State is driven directly by /status (plain 'online'/'offline')
         "state_topic": topics.status.topic,
@@ -92,7 +122,7 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
     
     pub("binary_sensor", "pi_undervoltage_now", {
         "name": "Pi Undervoltage (Now)",
-        "unique_id": f"pihub_{room}_pi_undervoltage_now",
+        "unique_id": f"{room}_pihub_pi_undervoltage_now",
         "device_class": "problem",
         "state_topic": state_topic_info,
         "value_template": "{{ 'ON' if value_json.pi_undervolt | default(false) else 'OFF' }}",
@@ -106,7 +136,7 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
     
     pub("binary_sensor", "pi_undervoltage_ever", {
         "name": "Pi Undervoltage (Ever)",
-        "unique_id": f"pihub_{room}_pi_undervoltage_ever",
+        "unique_id": f"{room}_pihub_pi_undervoltage_ever",
         "device_class": "problem",
         "state_topic": state_topic_info,
         "value_template": "{{ 'ON' if value_json.pi_undervolt_ever | default(false) else 'OFF' }}",
@@ -121,7 +151,7 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
     # Activity display (reads your TX topic directly; not retained)
     pub("sensor", "activity_display", {
         "name": "Activity",
-        "unique_id": f"pihub_{room}_activity_display",
+        "unique_id": f"{room}_pihub_activity_display",
         "state_topic": topics.activity.topic,  # e.g. pihub/<room>/activity
         "value_template": "{{ value | default('-') }}",  # payload is raw string like "watch"
         "icon": "mdi:remote",
@@ -132,7 +162,7 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
     # HA service call display (reads your TX JSON topic directly; not retained)
     pub("sensor", "ha_service_call", {
         "name": "HA Service",
-        "unique_id": f"pihub_{room}_ha_service_call",
+        "unique_id": f"{room}_pihub_ha_service_call",
         "state_topic": topics.ha_service_call.topic,  # e.g. pihub/<room>/ha/service/call
         "value_template": "{{ (value_json.domain ~ '.' ~ value_json.service) if value_json is defined else '-' }}",
         "icon": "mdi:home-assistant",
@@ -144,7 +174,7 @@ def publish_discovery(bridge: Any, topics: "Topics", room: str) -> None:
     def sensor(uid_suffix: str, name: str, value_tpl: str, extra: dict | None = None):
         cfg = {
             "name": name,
-            "unique_id": f"pihub_{room}_{uid_suffix}",
+            "unique_id": f"{room}_pihub_{uid_suffix}",
             "state_topic": state_topic_info,   # JSON stats topic
             "value_template": value_tpl,
             **avail,

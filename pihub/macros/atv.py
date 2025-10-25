@@ -19,6 +19,7 @@ async def atv_off(hid, ikd_ms: int = DEFAULT_IKD_MS):
     await hid.consumer_tap(U_MENU,    hold_ms=40); await asyncio.sleep(d)
     await hid.consumer_tap(U_MENU,    hold_ms=40); await asyncio.sleep(d)
     await hid.consumer_tap(U_POWER,   hold_ms=2000)
+    print("[macros] atv-off done")
 
 async def atv_on(hid, ikd_ms: int = DEFAULT_IKD_MS):
     """ON sequence:
@@ -26,3 +27,4 @@ async def atv_on(hid, ikd_ms: int = DEFAULT_IKD_MS):
     await hid.consumer_tap(U_POWER, hold_ms=40)
     await asyncio.sleep(3.0)
     await hid.consumer_tap(U_MENU, hold_ms=40)
+    print("[macros] atv-on done")
