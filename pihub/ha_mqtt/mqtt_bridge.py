@@ -234,16 +234,18 @@ class MqttBridge:
 
     # ----------------------------- callbacks ------------------------------
 
+    def _publish_stats_once(self) -> None:
+        # Why: guarantee a snapshot shortly after connect even if the first got dropped
+        stats = get_stats()
+        publish_status_bridge(self.client, self._topics.status_info.topic, stats)
+    
     def _on_connect(self, client: mqtt.Client, userdata, flags, rc, properties=None):
-        # Derive session_present from flags (paho v3/v5 safe)
         sp = flags.get("session present") if isinstance(flags, dict) else flags
         session_present = bool(sp)
         print(f"[mqtt] connected; session_present={session_present}")
     
-        # Availability retained
         client.publish(self._topics.status.topic, "online", qos=1, retain=True)
     
-        # (Re)subscribe
         rc1, mid1 = client.subscribe(self.topic_activity_state, qos=1)
         if rc1 == mqtt.MQTT_ERR_SUCCESS:
             self._subs_pending[mid1] = self.topic_activity_state
@@ -252,14 +254,22 @@ class MqttBridge:
         if rc2 == mqtt.MQTT_ERR_SUCCESS:
             self._subs_pending[mid2] = self._topics.cmd_all.topic
     
-        # Fresh session: clear accidental retained TX topics only
         if not session_present:
             clear_retained_at_start_bridge(client, self._topics)
     
-        # Republish retained discovery every connect (idempotent), then initial stats
         publish_discovery_bridge(client, self._topics, self._room)
+    
+        # Immediate stats snapshot
         stats = get_stats()
         publish_status_bridge(client, self._topics.status_info.topic, stats)
+    
+        # One-shot delayed refresh (~0.5s) to avoid any race
+        try:
+            # self._loop was captured in start(); schedule on the app loop
+            self._loop.call_later(0.5, self._publish_stats_once)
+        except Exception:
+            # If loop not available, ignore; heartbeat will cover it
+            pass
 
     def _on_disconnect(self, client: mqtt.Client, userdata, rc, properties=None):
         if rc != 0:

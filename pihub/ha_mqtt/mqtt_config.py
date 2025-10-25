@@ -27,7 +27,7 @@ def load_config(path: str | Path) -> MqttConfig:
     m = data["mqtt"]
     prefix_bridge = str(m["prefix_bridge"]).strip()
 
-    client_id = f"pihub:{room}"
+    client_id = f"{room}:pihub"
 
     return MqttConfig(
         host=str(m["host"]).strip(),
